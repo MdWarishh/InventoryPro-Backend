@@ -30,7 +30,12 @@ client.on('qr', (qr) => {
 
 client.on('ready', () => console.log('✅ WhatsApp client ready!'))
 client.on('auth_failure', (msg) => console.error('❌ Auth failed:', msg))
-client.on('disconnected', () => client.initialize())
+client.on('disconnected', () => {
+  console.warn('⚠️ WhatsApp disconnected, reconnecting...')
+  client.initialize()
+})
 
-client.initialize()
+// ❌ client.initialize() yahan se HATA DIYA
+// Ab server.js se control hoga
+
 export default client
