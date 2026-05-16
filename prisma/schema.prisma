@@ -1,0 +1,625 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+
+
+enum Role {
+  SUPER_ADMIN
+  BRANCH_ADMIN
+  STAFF
+}
+
+enum SerialStatus {
+  AVAILABLE
+  SOLD
+  DAMAGED
+  TRANSFERRED
+}
+
+enum MeetingType {
+  CLIENT
+  INTERNAL
+  VENDOR
+  FOLLOWUP
+  OTHER
+}
+
+enum MeetingPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum NotificationType {
+  MEETING_REMINDER
+  LOW_STOCK
+  BULK_UPLOAD
+  STOCK_TRANSFER
+  SYSTEM
+}
+
+enum BulkUploadType {
+  PRODUCTS
+  STOCK_IN
+  DEALERS
+  SERIAL_NUMBERS
+}
+
+enum StockTransferStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum Module {
+  DASHBOARD
+  USERS
+  STOCK
+  MEETINGS
+  REPORTS
+  BRANCHES
+  NOTIFICATIONS
+  PRODUCTS
+  CATEGORIES
+  DEALERS
+  SETTINGS
+  SALES
+  STOCK_TRANSFER
+  ATTENDANCE
+  EXPENSES
+}
+
+enum AttendanceStatus {
+  PRESENT    
+  HALF_DAY    
+  ABSENT    
+}
+
+enum PaymentMode {
+  CASH
+  CARD
+  UPI
+  NET_BANKING
+}
+
+enum DealerBillingStatus {
+  UNBILLED
+  BILLED
+}
+
+enum PaymentMethod {
+  CASH
+  BANK
+  UPI
+  CARD
+  OTHER
+}
+
+model User {
+  id                    String               @id @default(cuid())
+  name                  String
+  email                 String               @unique
+  password              String
+  role                  Role                 @default(STAFF)
+  branchId              String?
+  whatsappNumber        String? 
+  isActive              Boolean              @default(true)
+  refreshToken          String?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  activityLogs          ActivityLog[]
+  bulkUploads           BulkUploadLog[]
+  participants          MeetingParticipant[]
+  meetings              Meeting[]            @relation("CreatedMeetings")
+  attendances  Attendance[]
+  notifications         Notification[]
+  stockIns              StockIn[]
+  stockOuts             StockOut[]
+  stockTransfersCreated StockTransfer[]      @relation("TransferCreatedBy")
+  branch                Branch?              @relation(fields: [branchId], references: [id])
+  expenses  Expense[]
+  permissions Permission[]
+
+  @@map("users")
+}
+
+model Branch {
+  id              String           @id @default(cuid())
+  name            String
+  code            String?          @unique
+  address         String?
+  phone           String?
+  email           String?
+  isMainBranch    Boolean          @default(false)
+  isActive        Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  activityLogs    ActivityLog[]
+  bulkUploads     BulkUploadLog[]
+  attendanceSettings  AttendanceSettings?
+  categories      Category[]
+  invoiceCounters InvoiceCounter[]
+  meetings        Meeting[]
+  productStocks   ProductStock[]
+  serialNumbers   SerialNumber[]
+  settings        Settings?
+  stockIns        StockIn[]
+  stockOuts       StockOut[]
+  dealerStockOuts DealerStockOut[]
+  transfersFrom   StockTransfer[]  @relation("TransferFrom")
+  transfersTo     StockTransfer[]  @relation("TransferTo")
+  users           User[]
+  expenses  Expense[]
+
+  @@map("branches")
+}
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  color       String    @default("#6366f1")
+  branchId    String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  branch      Branch?   @relation(fields: [branchId], references: [id])
+  products    Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id               String              @id @default(cuid())
+  name             String
+  sku              String              @unique
+  description      String?
+  categoryId       String?
+  unit             String              @default("pcs")
+  purchasePrice    Float               @default(0)
+  sellingPrice     Float               @default(0)
+  gstRate          Float               @default(18)
+  hsnCode          String?
+  minStockAlert    Int                 @default(10)
+  images           String[]
+  barcode          String?
+  hasSerialNumbers Boolean             @default(false)
+  isActive         Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  productStocks    ProductStock[]
+  category         Category?           @relation(fields: [categoryId], references: [id])
+  serialNumbers    SerialNumber[]
+  stockIns         StockIn[]
+  stockOuts        StockOut[]
+  dealerStockOuts  DealerStockOut[]
+  transferItems    StockTransferItem[]
+
+  @@map("products")
+}
+
+model ProductStock {
+  id           String   @id @default(cuid())
+  productId    String
+  branchId     String
+  currentStock Int      @default(0)
+  updatedAt    DateTime @updatedAt
+  branch       Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, branchId])
+  @@map("product_stocks")
+}
+
+model SerialNumber {
+  id           String       @id @default(cuid())
+  serialNumber String
+  productId    String
+  branchId     String
+  status       SerialStatus @default(AVAILABLE)
+  stockInId    String?
+  stockOutId   String?
+  dealerStockOutId String? 
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  stockIn      StockIn?     @relation(fields: [stockInId], references: [id])
+  stockOut     StockOut?    @relation(fields: [stockOutId], references: [id])
+  dealerStockOut  DealerStockOut? @relation(fields: [dealerStockOutId], references: [id])
+  dealerBillingStatus  DealerBillingStatus?  
+  dealerInvoiceId      String? 
+  dealerInvoice  Invoice?  @relation("DealerSerialInvoice", fields: [dealerInvoiceId], references: [id])               
+
+
+  @@unique([serialNumber, productId])
+  @@map("serial_numbers")
+}
+
+model Dealer {
+  id          String           @id @default(cuid())
+  name        String
+  phone       String?
+  email       String?
+  address     String?
+  city        String?
+  state       String?
+  gstNumber   String?
+  bankAccount String?
+  bankName    String?
+  ifscCode    String?
+  isActive    Boolean          @default(true)
+  notes       String?
+  stockOuts   DealerStockOut[]
+  invoices        DealerInvoice[]
+  mainInvoices    Invoice[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  stockIns    StockIn[]
+
+  @@map("dealers")
+}
+
+model DealerStockOut {
+  id        String   @id @default(cuid())
+  dealerId  String
+  productId String
+  branchId  String
+  quantity  Int
+  salePrice Float
+  date      DateTime @default(now())
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  serialNumbers SerialNumber[]
+
+  dealer  Dealer  @relation(fields: [dealerId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  branch  Branch  @relation(fields: [branchId], references: [id])
+
+  @@map("dealer_stock_outs")
+}
+
+model DealerInvoice {
+  id            String   @id @default(cuid())
+  invoiceNumber String   @unique
+  dealerId      String
+  items         Json
+  totalAmount   Float
+  date          DateTime @default(now())
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  dealer Dealer @relation(fields: [dealerId], references: [id])
+
+  @@map("dealer_invoices")
+}
+
+model StockIn {
+  id            String         @id @default(cuid())
+  productId     String
+  branchId      String
+  quantity      Int
+  purchasePrice Float
+  dealerId      String?
+  sourceNote    String?
+  referenceNo   String?
+  date          DateTime       @default(now())
+  createdBy     String
+  createdAt     DateTime       @default(now())
+  serialNumbers SerialNumber[]
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  createdByUser User           @relation(fields: [createdBy], references: [id])
+  dealer        Dealer?        @relation(fields: [dealerId], references: [id])
+  product       Product        @relation(fields: [productId], references: [id])
+
+  @@map("stock_ins")
+}
+
+model StockOut {
+  id              String         @id @default(cuid())
+  productId       String
+  branchId        String
+  quantity        Int
+  sellingPrice    Float
+  customerName    String?
+  customerPhone   String?
+  customerEmail   String?
+  customerAddress String?
+  invoiceId       String?
+  notes           String?
+  date            DateTime       @default(now())
+  createdBy       String
+  createdAt       DateTime       @default(now())
+  serialNumbers   SerialNumber[]
+  branch          Branch         @relation(fields: [branchId], references: [id])
+  createdByUser   User           @relation(fields: [createdBy], references: [id])
+  invoice         Invoice?       @relation(fields: [invoiceId], references: [id])
+  product         Product        @relation(fields: [productId], references: [id])
+
+  @@map("stock_outs")
+}
+
+model Invoice {
+  id              String     @id @default(cuid())
+  invoiceNumber   String
+  branchId        String
+  customerName    String?
+  customerPhone   String?
+  customerEmail   String?
+  customerAddress String?
+  customerGST     String?
+  subtotal        Float
+  gstAmount       Float      @default(0)
+  discount        Float      @default(0)
+  totalAmount     Float
+  notes           String?
+  terms           String?
+  date            DateTime   @default(now())
+  createdBy       String
+ createdAt       DateTime   @default(now())
+  stockOuts       StockOut[]
+  paymentMode     PaymentMode @default(CASH)
+  dealerId        String?
+  dealer          Dealer?    @relation(fields: [dealerId], references: [id])
+  dealerSerials   SerialNumber[] @relation("DealerSerialInvoice")
+
+  @@unique([invoiceNumber, branchId])
+  @@map("invoices")
+}
+
+model InvoiceCounter {
+  id         String @id @default(cuid())
+  branchId   String
+  month      Int
+  year       Int
+  lastNumber Int    @default(0)
+  prefix     String @default("INV")
+  branch     Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, month, year])
+  @@map("invoice_counters")
+}
+
+model StockTransfer {
+  id            String              @id @default(cuid())
+  fromBranchId  String
+  toBranchId    String
+  status        StockTransferStatus @default(PENDING)
+  notes         String?
+  createdBy     String
+  approvedBy    String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  items         StockTransferItem[]
+  createdByUser User                @relation("TransferCreatedBy", fields: [createdBy], references: [id])
+  fromBranch    Branch              @relation("TransferFrom", fields: [fromBranchId], references: [id])
+  toBranch      Branch              @relation("TransferTo", fields: [toBranchId], references: [id])
+
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id         String        @id @default(cuid())
+  transferId String
+  productId  String
+  quantity   Int
+  product    Product       @relation(fields: [productId], references: [id])
+  transfer   StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+
+  @@map("stock_transfer_items")
+}
+
+model Meeting {
+  id              String               @id @default(cuid())
+  title           String
+  description     String?
+  startTime       DateTime
+  endTime         DateTime
+  location        String?
+  meetingLink     String?
+  type            MeetingType          @default(INTERNAL)
+  priority        MeetingPriority      @default(MEDIUM)
+  status          MeetingStatus        @default(SCHEDULED)
+  reminderMinutes Int                  @default(30)
+  reminderSent    Boolean              @default(false)
+  notes           String?
+  branchId        String?
+  createdBy       String
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  participants    MeetingParticipant[]
+  branch          Branch?              @relation(fields: [branchId], references: [id])
+  createdByUser   User                 @relation("CreatedMeetings", fields: [createdBy], references: [id])
+
+  @@map("meetings")
+}
+
+model MeetingParticipant {
+  id            String  @id @default(cuid())
+  meetingId     String
+  userId        String?
+  externalName  String?
+  externalEmail String?
+  status        String  @default("INVITED")
+  meeting       Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user          User?   @relation(fields: [userId], references: [id])
+
+  @@map("meeting_participants")
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType
+  relatedId String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model BulkUploadLog {
+  id             String         @id @default(cuid())
+  type           BulkUploadType
+  fileName       String
+  totalRows      Int
+  successRows    Int
+  failedRows     Int
+  errorDetails   Json?
+  uploadedBy     String
+  branchId       String?
+  createdAt      DateTime       @default(now())
+  branch         Branch?        @relation(fields: [branchId], references: [id])
+  uploadedByUser User           @relation(fields: [uploadedBy], references: [id])
+
+  @@map("bulk_upload_logs")
+}
+
+model Settings {
+  id                  String   @id @default(cuid())
+  branchId            String   @unique
+  companyName         String?
+  logo                String?
+  address             String?
+  phone               String?
+  email               String?
+  website             String?
+  gstin               String?
+  legalName           String?
+  state               String?
+  stateCode           String?
+  defaultGSTRate      Float    @default(18)
+  invoicePrefix       String   @default("INV")
+  invoiceFooter       String?
+  invoiceTerms        String?
+  resetInvoiceMonthly Boolean  @default(true)
+  placeOfSupply       String?
+  placeOfSupplyCode   String?
+  dueDateTerms        String?  @default("Due on Receipt")
+  footerServices      String?
+  footerColor         String?
+  bankAccountHolder   String?
+  bankAccountNumber   String?
+  bankIFSC            String?
+  bankBranch          String?
+  qrCodeImage         String?
+  authorizedSignature String?
+  currency            String   @default("INR")
+  currencySymbol      String   @default("₹")
+  timezone            String   @default("Asia/Kolkata")
+  primaryColor        String   @default("#6366f1")
+  secondaryColor      String   @default("#8b5cf6")
+  fontSize            String   @default("md")
+  fontFamily          String   @default("Inter")
+  updatedAt           DateTime @updatedAt
+  branch              Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@map("settings")
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String
+  branchId  String?
+  action    String
+  module    String
+  details   Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  branch    Branch?  @relation(fields: [branchId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("activity_logs")
+}
+
+model Permission {
+  id        String   @id @default(cuid())
+  userId    String
+  module    Module
+  canView   Boolean  @default(false)
+  canCreate Boolean  @default(false)
+  canEdit   Boolean  @default(false)
+  canDelete Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, module])
+  @@map("permissions")
+}
+
+
+// ============================================================
+// NEW MODELS - paste at the bottom of schema.prisma
+// ============================================================
+
+model Attendance {
+  id           String           @id @default(cuid())
+  userId       String
+  branchId     String
+  date         DateTime         // store as date only (no time) — use start of day UTC
+  checkInTime  DateTime?
+  checkOutTime DateTime?
+  totalHours   Float?
+  status       AttendanceStatus @default(ABSENT)
+  notes        String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])    // one record per user per day
+  @@map("attendances")
+}
+
+model AttendanceSettings {
+  id                  String   @id @default(cuid())
+  branchId            String   @unique
+  minimumWorkingHours Float?   // e.g. 6.0 — null means no restriction
+  workStartTime       String?  // e.g. "09:00" — informational only
+  workEndTime         String?  // e.g. "18:00" — informational only
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  branch              Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@map("attendance_settings")
+}
+
+
+model Expense {
+  id            String        @id @default(cuid())
+  title         String?
+  amount        Float
+  category      String?
+  paymentMethod PaymentMethod @default(CASH)
+  notes         String?
+  date          DateTime      @default(now())
+  branchId      String?
+  createdBy     String
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  branch        Branch?       @relation(fields: [branchId], references: [id])
+  createdByUser User          @relation(fields: [createdBy], references: [id])
+
+  @@index([date])
+  @@index([branchId, date])
+  @@map("expenses")
+}

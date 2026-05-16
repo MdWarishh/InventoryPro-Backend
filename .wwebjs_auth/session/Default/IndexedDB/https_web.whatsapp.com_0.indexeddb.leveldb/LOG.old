@@ -1,0 +1,11 @@
+2026/05/16-16:13:52.679 5ad4 Reusing MANIFEST E:\vs code\SAAS\Inventory-management\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-013015
+2026/05/16-16:13:52.708 5ad4 Recovering log #13950
+2026/05/16-16:13:52.757 5ad4 Reusing old log E:\vs code\SAAS\Inventory-management\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/013950.log 
+2026/05/16-16:13:54.449 5f3c Compacting 1@1 + 9@2 files
+2026/05/16-16:13:54.510 5f3c Generated table #13975@1: 19204 keys, 176712 bytes
+2026/05/16-16:13:54.686 5f3c Generated table #13976@1: 92461 keys, 2240298 bytes
+2026/05/16-16:13:54.856 5f3c Generated table #13977@1: 91573 keys, 2239349 bytes
+2026/05/16-16:13:55.017 5f3c Generated table #13978@1: 91673 keys, 2238953 bytes
+2026/05/16-16:13:55.186 5f3c Generated table #13979@1: 83917 keys, 2232417 bytes
+2026/05/16-16:13:55.362 5f3c Generated table #13980@1: 90128 keys, 2246952 bytes
+2026/05/16-16:13:55.565 5f3c Generated table #13981@1: 95510 keys, 2248576 bytes
