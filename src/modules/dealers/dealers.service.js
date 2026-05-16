@@ -23,35 +23,63 @@ export const getAllDealers = async ({ page = 1, limit = 20, search } = {}) => {
     prisma.dealer.count({ where }),
   ])
 
+  // _count.invoices = DealerInvoice (old model) — Invoice (main model) se alag count karo
+  const dealerIds = dealers.map(d => d.id)
+  const mainInvoiceCounts = await prisma.invoice.groupBy({
+    by: ['dealerId'],
+    where: { dealerId: { in: dealerIds } },
+    _count: { id: true },
+  })
+  const mainInvoiceMap = Object.fromEntries(mainInvoiceCounts.map(r => [r.dealerId, r._count.id]))
+
+  const dealersWithCount = dealers.map(d => ({
+    ...d,
+    _count: {
+      ...d._count,
+      invoices: mainInvoiceMap[d.id] ?? 0,  // Invoice model ka count
+    },
+  }))
+
   return {
-    dealers,
+    dealers: dealersWithCount,
     pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / limit) },
   }
 }
 
 export const getDealerById = async (id) => {
-  const dealer = await prisma.dealer.findUnique({
-    where: { id },
-    include: {
-      stockIns: {
-        take: 5, orderBy: { createdAt: 'desc' },
-        include: {
-          product: { select: { id: true, name: true, sku: true } },
-          branch: { select: { id: true, name: true } },
+  const [dealer, mainInvoiceCount] = await Promise.all([
+    prisma.dealer.findUnique({
+      where: { id },
+      include: {
+        stockIns: {
+          take: 5, orderBy: { createdAt: 'desc' },
+          include: {
+            product: { select: { id: true, name: true, sku: true } },
+            branch: { select: { id: true, name: true } },
+          },
         },
-      },
-      stockOuts: {
-        take: 5, orderBy: { createdAt: 'desc' },
-        include: {
-          product: { select: { id: true, name: true, sku: true } },
-          branch: { select: { id: true, name: true } },
+        stockOuts: {
+          take: 5, orderBy: { createdAt: 'desc' },
+          include: {
+            product: { select: { id: true, name: true, sku: true } },
+            branch: { select: { id: true, name: true } },
+          },
         },
+        _count: { select: { stockIns: true, stockOuts: true, invoices: true } },
       },
-      _count: { select: { stockIns: true, stockOuts: true, invoices: true } },
-    },
-  })
+    }),
+    // Invoice (main model) ka correct count
+    prisma.invoice.count({ where: { dealerId: id } }),
+  ])
   if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
-  return dealer
+
+  return {
+    ...dealer,
+    _count: {
+      ...dealer._count,
+      invoices: mainInvoiceCount,  // Invoice model ka count override
+    },
+  }
 }
 
 export const createDealer = async (data) => prisma.dealer.create({ data })
