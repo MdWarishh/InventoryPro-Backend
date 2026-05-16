@@ -30,7 +30,7 @@ app.use(helmet())
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://inventory-pro-frontend-wine.vercel.app',
+  'https://inventory-pro-frontend-alpha.vercel.app',
   process.env.CLIENT_URL,
 ].filter(Boolean)
 
