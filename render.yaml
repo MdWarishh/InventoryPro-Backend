@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: inventory-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WHATSAPP_ENABLED
+        value: false

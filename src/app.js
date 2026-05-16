@@ -26,8 +26,20 @@ import expensesRouter from './modules/expenses/expenses.routes.js'
 const app = express()
 
 app.use(helmet())
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://inventory-pro-frontend-wine.vercel.app',
+  process.env.CLIENT_URL,
+].filter(Boolean)
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true)  // Postman / server-to-server
+    if (allowedOrigins.includes(origin)) return callback(null, true)
+    callback(new Error(`CORS blocked: ${origin}`))
+  },
   credentials: true,
 }))
 
