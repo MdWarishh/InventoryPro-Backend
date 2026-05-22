@@ -4,7 +4,7 @@ import { meetingReminderCron } from './src/cron/meetingReminder.cron.js'
 
 const PORT = process.env.PORT || 5000
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`)
   console.log(`📦 Environment: ${process.env.NODE_ENV}`)
 
@@ -12,13 +12,15 @@ const server = app.listen(PORT, async () => {
   console.log(`⏰ Meeting reminder cron started`)
 
   if (process.env.WHATSAPP_ENABLED === 'true') {
-    try {
-      const { default: waClient } = await import('./src/config/whatsapp.js')
-      await waClient.initialize()
-      console.log('📱 WhatsApp client initializing...')
-    } catch (err) {
-      console.warn('⚠️ WhatsApp init failed (server will continue):', err.message)
-    }
+    setTimeout(async () => {                              // ← sirf ye badla
+      try {
+        const { default: waClient } = await import('./src/config/whatsapp.js')
+        await waClient.initialize()
+        console.log('📱 WhatsApp client initializing...')
+      } catch (err) {
+        console.warn('⚠️ WhatsApp init failed (server will continue):', err.message)
+      }
+    }, 3000)                                              // ← 3 sec delay
   } else {
     console.log('ℹ️  WhatsApp disabled (WHATSAPP_ENABLED != true)')
   }
@@ -26,8 +28,6 @@ const server = app.listen(PORT, async () => {
 
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled Rejection:', err.message)
-
-  // WhatsApp / Chrome error se server crash mat karo
   if (
     err.message?.includes('Chrome') ||
     err.message?.includes('puppeteer') ||
@@ -37,7 +37,6 @@ process.on('unhandledRejection', (err) => {
     console.warn('⚠️ WhatsApp/Chrome error ignored — server keeps running')
     return
   }
-
   server.close(() => process.exit(1))
 })
 
