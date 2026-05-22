@@ -28,17 +28,23 @@ const app = express()
 app.use(helmet())
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
+// ─── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   'http://localhost:3000',
   'https://inventory-pro-frontend-alpha.vercel.app',
-  process.env.CLIENT_URL,
-].filter(Boolean)
+  'https://crm.limrahearingcare.com', // 🔥 add this FIXED
+]
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true)  // Postman / server-to-server
-    if (allowedOrigins.includes(origin)) return callback(null, true)
-    callback(new Error(`CORS blocked: ${origin}`))
+    if (!origin) return callback(null, true)
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+
+    console.log("❌ CORS blocked:", origin) // debug
+    return callback(new Error(`CORS blocked: ${origin}`))
   },
   credentials: true,
 }))
