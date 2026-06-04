@@ -243,13 +243,9 @@ export const getDealerStockSummary = async (id) => {
 }
 
 // ─── GET DEALER SERIALS ───────────────────────────────────────────────────────
-
 export const getDealerSerials = async (dealerId, productId, branchId) => {
-  // stockIn records dhundo dealer ke — productId filter optional
   const stockInWhere = { dealerId }
   if (productId) stockInWhere.productId = productId
-  // branchId sirf stockIn level pe filter karo (jis branch se diya tha)
-  // serial level pe mat karo — serial ka branchId update nahi hota transfer pe
   if (branchId) stockInWhere.branchId = branchId
 
   const stockIns = await prisma.stockIn.findMany({
@@ -259,14 +255,14 @@ export const getDealerSerials = async (dealerId, productId, branchId) => {
   const stockInIds = stockIns.map(s => s.id)
   if (!stockInIds.length) return []
 
-  // Sirf stockInId se link karo — branchId serial pe mat lagao
-  // status TRANSFERRED = dealer ke paas hai, SOLD nahi hua abhi
-  // dealerBillingStatus UNBILLED/null = invoice nahi bana abhi
   return prisma.serialNumber.findMany({
     where: {
       stockInId: { in: stockInIds },
       status: 'TRANSFERRED',
-      dealerBillingStatus: { in: ['UNBILLED', null] },
+      OR: [                                    // ← FIX: OR instead of in: [..., null]
+        { dealerBillingStatus: 'UNBILLED' },
+        { dealerBillingStatus: null },
+      ],
       ...(productId && { productId }),
     },
     select: { id: true, serialNumber: true, status: true, dealerBillingStatus: true },

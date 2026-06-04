@@ -32,6 +32,7 @@ export const updateSettings = async (branchId, data, user) => {
     currency, currencySymbol, timezone,
     // Appearance
     primaryColor, secondaryColor, footerColor, fontSize, fontFamily,
+    customPaymentModes, 
   } = data
 
   // Build update object — only include keys present in payload
@@ -72,6 +73,7 @@ export const updateSettings = async (branchId, data, user) => {
     ...(footerColor    !== undefined && { footerColor }),
     ...(fontSize       !== undefined && { fontSize }),
     ...(fontFamily     !== undefined && { fontFamily }),
+    ...(customPaymentModes !== undefined && { customPaymentModes }),
   }
 
   return prisma.settings.upsert({

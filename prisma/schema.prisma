@@ -89,13 +89,6 @@ enum AttendanceStatus {
   ABSENT    
 }
 
-enum PaymentMode {
-  CASH
-  CARD
-  UPI
-  NET_BANKING
-}
-
 enum DealerBillingStatus {
   UNBILLED
   BILLED
@@ -192,6 +185,7 @@ model Product {
   unit             String              @default("pcs")
   purchasePrice    Float               @default(0)
   sellingPrice     Float               @default(0)
+  brand            String?
   gstRate          Float               @default(18)
   hsnCode          String?
   minStockAlert    Int                 @default(10)
@@ -373,7 +367,7 @@ model Invoice {
   createdBy       String
  createdAt       DateTime   @default(now())
   stockOuts       StockOut[]
-  paymentMode     PaymentMode @default(CASH)
+  paymentMode     String      @default("Cash")
   dealerId        String?
   dealer          Dealer?    @relation(fields: [dealerId], references: [id])
   dealerSerials   SerialNumber[] @relation("DealerSerialInvoice")
@@ -522,6 +516,7 @@ model Settings {
   bankBranch          String?
   qrCodeImage         String?
   authorizedSignature String?
+  customPaymentModes   String[]  @default(["Cash", "UPI", "Card"])
   currency            String   @default("INR")
   currencySymbol      String   @default("₹")
   timezone            String   @default("Asia/Kolkata")

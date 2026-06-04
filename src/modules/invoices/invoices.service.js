@@ -5,7 +5,7 @@ export const createInvoice = async (data, user) => {
   const {
     branchId, customerName, customerPhone, customerEmail,
     customerAddress, customerGST, items, discount = 0, notes, terms, date,
-    paymentMode = 'CASH',
+    paymentMode = 'Cash',
     dealerId = null,          // NEW: optional — dealer invoice flow
     isDealerInvoice = false,  // NEW: flag to skip productStock check
   } = data
@@ -19,6 +19,14 @@ export const createInvoice = async (data, user) => {
     const dealer = await prisma.dealer.findUnique({ where: { id: dealerId } })
     if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
   }
+
+   const branchSettings = await prisma.settings.findUnique({ where: { branchId } })
+
+ const customModes = branchSettings?.customPaymentModes ?? []
+if (customModes.length > 0 && !customModes.includes(paymentMode)) {
+  throw { statusCode: 400, message: `Payment mode "${paymentMode}" is not configured for this branch.` }
+}
+
 
   const invoiceNumber = await generateInvoiceNumber(branchId)
 
@@ -231,6 +239,201 @@ export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, sta
   ])
 
   return { invoices, pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / limit) } }
+}
+
+export const updateInvoice = async (id, data, user) => {
+  // ── Fetch existing invoice ────────────────────────────────────────────────
+  const existing = await prisma.invoice.findUnique({
+    where: { id },
+    include: {
+      stockOuts: {
+        include: {
+          serialNumbers: true,
+        },
+      },
+    },
+  })
+  if (!existing) throw { statusCode: 404, message: 'Invoice not found.' }
+  if (user.role !== 'SUPER_ADMIN' && existing.branchId !== user.branchId) {
+    throw { statusCode: 403, message: 'Access denied.' }
+  }
+
+  // Dealer invoice edit abhi support nahi — alag logic chahiye
+  if (existing.dealerId) {
+    throw { statusCode: 400, message: 'Dealer invoices cannot be edited yet.' }
+  }
+
+  const {
+    customerName, customerPhone, customerEmail,
+    customerAddress, customerGST, items, discount = 0,
+    notes, terms, date, paymentMode = 'Cash',
+  } = data
+
+  const branchId = existing.branchId
+
+  // ── Validate payment mode ─────────────────────────────────────────────────
+  const branchSettings = await prisma.settings.findUnique({ where: { branchId } })
+  const customModes = branchSettings?.customPaymentModes ?? []
+  if (customModes.length > 0 && !customModes.includes(paymentMode)) {
+    throw { statusCode: 400, message: `Payment mode "${paymentMode}" is not configured for this branch.` }
+  }
+
+  // ── Process new items ─────────────────────────────────────────────────────
+  let subtotal = 0
+  let gstAmount = 0
+  const processedItems = []
+
+  for (const item of items) {
+    const product = await prisma.product.findUnique({ where: { id: item.productId } })
+    if (!product) throw { statusCode: 404, message: `Product not found: ${item.productId}` }
+
+    const itemTotal = item.sellingPrice * item.quantity
+    const itemGST = itemTotal * (product.gstRate / 100)
+    subtotal += itemTotal
+    gstAmount += itemGST
+    processedItems.push({ ...item, product, gstRate: product.gstRate })
+  }
+
+  const totalAmount = subtotal + gstAmount - Number(discount)
+
+  await prisma.$transaction(async (tx) => {
+
+    // ── STEP 1: Purane stockOuts ke serials AVAILABLE wapas karo ─────────────
+    for (const oldStockOut of existing.stockOuts) {
+      // Serial numbers ko wapas AVAILABLE karo
+      if (oldStockOut.serialNumbers.length > 0) {
+        await tx.serialNumber.updateMany({
+          where: { stockOutId: oldStockOut.id },
+          data: { status: 'AVAILABLE', stockOutId: null },
+        })
+      }
+
+      // ProductStock increment karo (jo decrement hua tha)
+      await tx.productStock.update({
+        where: { productId_branchId: { productId: oldStockOut.productId, branchId } },
+        data: { currentStock: { increment: oldStockOut.quantity } },
+      })
+    }
+
+    // ── STEP 2: Purane stockOuts delete karo ─────────────────────────────────
+    await tx.stockOut.deleteMany({ where: { invoiceId: id } })
+
+    // ── STEP 3: Invoice update karo ───────────────────────────────────────────
+    await tx.invoice.update({
+      where: { id },
+      data: {
+        customerName, customerPhone, customerEmail,
+        customerAddress,
+        customerGST: customerGST || null,
+        subtotal, gstAmount,
+        discount: Number(discount),
+        totalAmount,
+        notes: notes || null,
+        terms: terms || null,
+        paymentMode,
+        date: date ? new Date(date) : existing.date,
+      },
+    })
+
+    // ── STEP 4: Naye stockOuts create karo ───────────────────────────────────
+    for (const item of processedItems) {
+      // Stock check
+      const currentStock = await tx.productStock.findUnique({
+        where: { productId_branchId: { productId: item.productId, branchId } },
+      })
+      if (!currentStock || currentStock.currentStock < item.quantity) {
+        throw { statusCode: 400, message: `Insufficient stock for: ${item.product.name}` }
+      }
+
+      const stockOut = await tx.stockOut.create({
+        data: {
+          productId: item.productId,
+          branchId,
+          quantity: Number(item.quantity),
+          sellingPrice: Number(item.sellingPrice),
+          customerName, customerPhone, customerEmail, customerAddress,
+          invoiceId: id,
+          notes: notes || null,
+          date: date ? new Date(date) : existing.date,
+          createdBy: existing.createdBy,
+        },
+      })
+
+      // Serial numbers SOLD mark karo
+      if (item.serialNumberIds?.length) {
+        await tx.serialNumber.updateMany({
+          where: { id: { in: item.serialNumberIds } },
+          data: { status: 'SOLD', stockOutId: stockOut.id },
+        })
+      }
+
+      // Stock decrement
+      await tx.productStock.update({
+        where: { productId_branchId: { productId: item.productId, branchId } },
+        data: { currentStock: { decrement: Number(item.quantity) } },
+      })
+    }
+  })
+
+  return getInvoiceById(id, user)
+}
+
+export const deleteInvoice = async (id, user) => {
+  const existing = await prisma.invoice.findUnique({
+    where: { id },
+    include: {
+      stockOuts: {
+        include: { serialNumbers: true },
+      },
+    },
+  })
+  if (!existing) throw { statusCode: 404, message: 'Invoice not found.' }
+  if (user.role !== 'SUPER_ADMIN' && existing.branchId !== user.branchId) {
+    throw { statusCode: 403, message: 'Access denied.' }
+  }
+
+  // Dealer invoice delete — serials TRANSFERRED wapas, dealerBillingStatus null
+  const isDealerInvoice = !!existing.dealerId
+
+  await prisma.$transaction(async (tx) => {
+
+    for (const stockOut of existing.stockOuts) {
+      if (isDealerInvoice) {
+        // Dealer serials — SOLD → TRANSFERRED wapas, billing status UNBILLED
+        if (stockOut.serialNumbers.length > 0) {
+          await tx.serialNumber.updateMany({
+            where: { dealerInvoiceId: id },
+            data: {
+              status: 'TRANSFERRED',
+              dealerBillingStatus: 'UNBILLED',
+              dealerInvoiceId: null,
+            },
+          })
+        }
+        // Dealer invoice mein productStock deduct nahi hua tha — increment mat karo
+      } else {
+        // Normal invoice — serials AVAILABLE wapas, stock increment
+        if (stockOut.serialNumbers.length > 0) {
+          await tx.serialNumber.updateMany({
+            where: { stockOutId: stockOut.id },
+            data: { status: 'AVAILABLE', stockOutId: null },
+          })
+        }
+        await tx.productStock.update({
+          where: { productId_branchId: { productId: stockOut.productId, branchId: existing.branchId } },
+          data: { currentStock: { increment: stockOut.quantity } },
+        })
+      }
+    }
+
+    // StockOuts delete
+    await tx.stockOut.deleteMany({ where: { invoiceId: id } })
+
+    // Invoice delete
+    await tx.invoice.delete({ where: { id } })
+  })
+
+  return { message: 'Invoice deleted successfully.' }
 }
 
 export const resetCounter = async (branchId, user) => {

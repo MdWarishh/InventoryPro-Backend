@@ -85,11 +85,18 @@ export const createProduct = async (data, user) => {
     include: { category: true },
   })
 
-  const branches = await prisma.branch.findMany({ where: { isActive: true }, select: { id: true } })
-  await prisma.productStock.createMany({
-    data: branches.map(b => ({ productId: product.id, branchId: b.id, currentStock: 0 })),
-    skipDuplicates: true,
-  })
+  // SUPER_ADMIN ke liye saari branches me stock, baaki ke liye sirf apni branch
+  if (user.role === 'SUPER_ADMIN') {
+    const branches = await prisma.branch.findMany({ where: { isActive: true }, select: { id: true } })
+    await prisma.productStock.createMany({
+      data: branches.map(b => ({ productId: product.id, branchId: b.id, currentStock: 0 })),
+      skipDuplicates: true,
+    })
+  } else if (user.branchId) {
+    await prisma.productStock.create({
+      data: { productId: product.id, branchId: user.branchId, currentStock: 0 },
+    })
+  }
 
   return product
 }

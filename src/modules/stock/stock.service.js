@@ -1,12 +1,19 @@
 import prisma from '../../config/db.js'
 import { sendLowStockNotification } from '../notifications/notifications.service.js'
 
-export const stockIn = async (data, user) => {
-  const { productId, branchId, quantity, purchasePrice, dealerId, sourceNote, referenceNo, date, serialNumbers } = data
-
+// ─── helper: branch access check ─────────────────────────────────────────────
+const checkBranchAccess = (user, branchId) => {
   if (user.role !== 'SUPER_ADMIN' && user.branchId !== branchId) {
     throw { statusCode: 403, message: 'Access denied to this branch.' }
   }
+}
+
+// ─── STOCK IN ─────────────────────────────────────────────────────────────────
+
+export const stockIn = async (data, user) => {
+  const { productId, branchId, quantity, purchasePrice, dealerId, sourceNote, referenceNo, date, serialNumbers } = data
+
+  checkBranchAccess(user, branchId)
 
   const product = await prisma.product.findUnique({ where: { id: productId } })
   if (!product) throw { statusCode: 404, message: 'Product not found.' }
@@ -62,7 +69,7 @@ export const stockIn = async (data, user) => {
   return prisma.stockIn.findUnique({
     where: { id: result.id },
     include: {
-      product: { select: { id: true, name: true, sku: true } },
+      product: { select: { id: true, name: true, sku: true, brand: true } },
       branch: { select: { id: true, name: true } },
       dealer: { select: { id: true, name: true } },
       serialNumbers: true,
@@ -70,12 +77,157 @@ export const stockIn = async (data, user) => {
   })
 }
 
+// ─── STOCK IN: UPDATE ─────────────────────────────────────────────────────────
+
+export const updateStockIn = async (id, data, user) => {
+  const { quantity, purchasePrice, dealerId, sourceNote, referenceNo, date, serialNumbers } = data
+
+  const existing = await prisma.stockIn.findUnique({
+    where: { id },
+    include: { serialNumbers: true },
+  })
+  if (!existing) throw { statusCode: 404, message: 'Stock-in record not found.' }
+
+  checkBranchAccess(user, existing.branchId)
+
+  // Check if any serial numbers from this record are already SOLD — block edit if so
+  if (existing.serialNumbers?.length) {
+    const soldSerials = existing.serialNumbers.filter(s => s.status === 'SOLD')
+    if (soldSerials.length > 0) {
+      throw {
+        statusCode: 400,
+        message: `Cannot edit: ${soldSerials.length} serial number(s) from this record have already been sold.`,
+      }
+    }
+  }
+
+  const product = await prisma.product.findUnique({ where: { id: existing.productId } })
+
+  const newQty = Number(quantity)
+  const oldQty = existing.quantity
+  const qtyDiff = newQty - oldQty // positive = stock increase, negative = stock decrease
+
+  // Validate serial numbers if product requires them
+  if (product.hasSerialNumbers) {
+    if (!serialNumbers || serialNumbers.length === 0) {
+      throw { statusCode: 400, message: 'Serial numbers are required for this product.' }
+    }
+    if (serialNumbers.length !== newQty) {
+      throw { statusCode: 400, message: `Serial numbers count (${serialNumbers.length}) must match quantity (${newQty}).` }
+    }
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    // Update productStock by applying the diff
+    await tx.productStock.update({
+      where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+      data: { currentStock: { increment: qtyDiff } },
+    })
+
+    // Handle serial numbers: delete old AVAILABLE ones, create new ones
+    if (product.hasSerialNumbers && serialNumbers?.length) {
+      await tx.serialNumber.deleteMany({
+        where: { stockInId: id, status: 'AVAILABLE' },
+      })
+
+      // Check for duplicates excluding the ones we just deleted
+      const duplicates = await tx.serialNumber.findMany({
+        where: { serialNumber: { in: serialNumbers }, productId: existing.productId },
+      })
+      if (duplicates.length > 0) {
+        const dups = duplicates.map(s => s.serialNumber).join(', ')
+        throw { statusCode: 409, message: `Duplicate serial numbers: ${dups}` }
+      }
+
+      await tx.serialNumber.createMany({
+        data: serialNumbers.map(sn => ({
+          serialNumber: sn,
+          productId: existing.productId,
+          branchId: existing.branchId,
+          status: 'AVAILABLE',
+          stockInId: id,
+        })),
+      })
+    }
+
+    return tx.stockIn.update({
+      where: { id },
+      data: {
+        quantity: newQty,
+        purchasePrice: Number(purchasePrice),
+        dealerId: dealerId || null,
+        sourceNote, referenceNo,
+        date: date ? new Date(date) : existing.date,
+      },
+    })
+  })
+
+  return prisma.stockIn.findUnique({
+    where: { id: result.id },
+    include: {
+      product: { select: { id: true, name: true, sku: true, brand: true } },
+      branch: { select: { id: true, name: true } },
+      dealer: { select: { id: true, name: true } },
+      serialNumbers: true,
+    },
+  })
+}
+
+// ─── STOCK IN: DELETE ─────────────────────────────────────────────────────────
+
+export const deleteStockIn = async (id, user) => {
+  const existing = await prisma.stockIn.findUnique({
+    where: { id },
+    include: { serialNumbers: true },
+  })
+  if (!existing) throw { statusCode: 404, message: 'Stock-in record not found.' }
+
+  checkBranchAccess(user, existing.branchId)
+
+  // Block delete if any serial number has been sold
+  if (existing.serialNumbers?.length) {
+    const soldSerials = existing.serialNumbers.filter(s => s.status === 'SOLD')
+    if (soldSerials.length > 0) {
+      throw {
+        statusCode: 400,
+        message: `Cannot delete: ${soldSerials.length} serial number(s) have already been sold. Delete the stock-out records first.`,
+      }
+    }
+  }
+
+  // Check current stock won't go negative
+  const productStock = await prisma.productStock.findUnique({
+    where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+  })
+  if (!productStock || productStock.currentStock < existing.quantity) {
+    throw {
+      statusCode: 400,
+      message: `Cannot delete: current stock (${productStock?.currentStock || 0}) is less than this record's quantity (${existing.quantity}). Some stock may have been sold.`,
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Delete AVAILABLE serial numbers linked to this stockIn
+    await tx.serialNumber.deleteMany({ where: { stockInId: id } })
+
+    // Reverse the stock count
+    await tx.productStock.update({
+      where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+      data: { currentStock: { decrement: existing.quantity } },
+    })
+
+    await tx.stockIn.delete({ where: { id } })
+  })
+
+  return { message: 'Stock-in record deleted successfully.' }
+}
+
+// ─── STOCK OUT ────────────────────────────────────────────────────────────────
+
 export const stockOut = async (data, user) => {
   const { productId, branchId, quantity, sellingPrice, customerName, customerPhone, customerEmail, customerAddress, serialNumberIds, invoiceId, notes, date } = data
 
-  if (user.role !== 'SUPER_ADMIN' && user.branchId !== branchId) {
-    throw { statusCode: 403, message: 'Access denied to this branch.' }
-  }
+  checkBranchAccess(user, branchId)
 
   const product = await prisma.product.findUnique({ where: { id: productId } })
   if (!product) throw { statusCode: 404, message: 'Product not found.' }
@@ -142,13 +294,147 @@ export const stockOut = async (data, user) => {
   return prisma.stockOut.findUnique({
     where: { id: result.id },
     include: {
-      product: { select: { id: true, name: true, sku: true } },
+      product: { select: { id: true, name: true, sku: true, brand: true } },
       branch: { select: { id: true, name: true } },
       serialNumbers: true,
       invoice: true,
     },
   })
 }
+
+// ─── STOCK OUT: UPDATE ────────────────────────────────────────────────────────
+
+export const updateStockOut = async (id, data, user) => {
+  const { quantity, sellingPrice, customerName, customerPhone, customerEmail, customerAddress, serialNumberIds, invoiceId, notes, date } = data
+
+  const existing = await prisma.stockOut.findUnique({
+    where: { id },
+    include: { serialNumbers: true },
+  })
+  if (!existing) throw { statusCode: 404, message: 'Stock-out record not found.' }
+
+  checkBranchAccess(user, existing.branchId)
+
+  const product = await prisma.product.findUnique({ where: { id: existing.productId } })
+  const newQty = Number(quantity)
+  const oldQty = existing.quantity
+  const qtyDiff = newQty - oldQty // positive = more sold, negative = less sold
+
+  if (product.hasSerialNumbers) {
+    if (!serialNumberIds?.length) throw { statusCode: 400, message: 'Serial numbers are required.' }
+    if (serialNumberIds.length !== newQty) {
+      throw { statusCode: 400, message: `Select exactly ${newQty} serial number(s).` }
+    }
+  }
+
+  // Check enough stock available for the additional quantity (if increasing)
+  if (qtyDiff > 0) {
+    const productStock = await prisma.productStock.findUnique({
+      where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+    })
+    if (!productStock || productStock.currentStock < qtyDiff) {
+      throw {
+        statusCode: 400,
+        message: `Insufficient stock to increase quantity. Available: ${productStock?.currentStock || 0}`,
+      }
+    }
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    // Reverse old serial numbers → AVAILABLE
+    if (existing.serialNumbers?.length) {
+      await tx.serialNumber.updateMany({
+        where: { stockOutId: id },
+        data: { status: 'AVAILABLE', stockOutId: null },
+      })
+    }
+
+    // Apply new serial numbers if product requires
+    if (product.hasSerialNumbers && serialNumberIds?.length) {
+      const serials = await tx.serialNumber.findMany({
+        where: { id: { in: serialNumberIds }, status: 'AVAILABLE', branchId: existing.branchId },
+      })
+      if (serials.length !== serialNumberIds.length) {
+        throw { statusCode: 400, message: 'Some selected serial numbers are not available.' }
+      }
+      await tx.serialNumber.updateMany({
+        where: { id: { in: serialNumberIds } },
+        data: { status: 'SOLD', stockOutId: id },
+      })
+    }
+
+    // Update productStock: reverse old qty, apply new qty → net = -qtyDiff
+    await tx.productStock.update({
+      where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+      data: { currentStock: { increment: oldQty - newQty } },
+    })
+
+    return tx.stockOut.update({
+      where: { id },
+      data: {
+        quantity: newQty,
+        sellingPrice: Number(sellingPrice),
+        customerName, customerPhone, customerEmail, customerAddress,
+        invoiceId: invoiceId || null,
+        notes,
+        date: date ? new Date(date) : existing.date,
+      },
+    })
+  })
+
+  // Low stock check after edit
+  const updatedStock = await prisma.productStock.findUnique({
+    where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+  })
+  if (updatedStock && updatedStock.currentStock <= product.minStockAlert) {
+    const branch = await prisma.branch.findUnique({ where: { id: existing.branchId }, select: { name: true } })
+    sendLowStockNotification(product, branch?.name, updatedStock.currentStock, user.id).catch(console.error)
+  }
+
+  return prisma.stockOut.findUnique({
+    where: { id: result.id },
+    include: {
+      product: { select: { id: true, name: true, sku: true, brand: true } },
+      branch: { select: { id: true, name: true } },
+      serialNumbers: true,
+      invoice: true,
+    },
+  })
+}
+
+// ─── STOCK OUT: DELETE ────────────────────────────────────────────────────────
+
+export const deleteStockOut = async (id, user) => {
+  const existing = await prisma.stockOut.findUnique({
+    where: { id },
+    include: { serialNumbers: true },
+  })
+  if (!existing) throw { statusCode: 404, message: 'Stock-out record not found.' }
+
+  checkBranchAccess(user, existing.branchId)
+
+  await prisma.$transaction(async (tx) => {
+    // Reverse serial numbers back to AVAILABLE
+    if (existing.serialNumbers?.length) {
+      await tx.serialNumber.updateMany({
+        where: { stockOutId: id },
+        data: { status: 'AVAILABLE', stockOutId: null },
+      })
+    }
+
+    // Add stock back
+    await tx.productStock.update({
+      where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+      data: { currentStock: { increment: existing.quantity } },
+    })
+
+    await tx.stockOut.delete({ where: { id } })
+  })
+
+  return { message: 'Stock-out record deleted successfully.' }
+}
+
+// ─── GET HISTORY ──────────────────────────────────────────────────────────────
 
 export const getStockHistory = async (user, { type, page = 1, limit = 20, branchId, productId, startDate, endDate } = {}) => {
   const skip = (page - 1) * limit
@@ -166,7 +452,7 @@ export const getStockHistory = async (user, { type, page = 1, limit = 20, branch
       prisma.stockIn.findMany({
         where, skip, take: Number(limit),
         include: {
-          product: { select: { id: true, name: true, sku: true } },
+          product: { select: { id: true, name: true, sku: true, brand: true } },
           branch: { select: { id: true, name: true } },
           dealer: { select: { id: true, name: true } },
           serialNumbers: { select: { id: true, serialNumber: true, status: true } },
@@ -182,7 +468,7 @@ export const getStockHistory = async (user, { type, page = 1, limit = 20, branch
     prisma.stockOut.findMany({
       where, skip, take: Number(limit),
       include: {
-        product: { select: { id: true, name: true, sku: true } },
+        product: { select: { id: true, name: true, sku: true, brand: true } },
         branch: { select: { id: true, name: true } },
         invoice: { select: { id: true, invoiceNumber: true } },
         serialNumbers: { select: { id: true, serialNumber: true } },
@@ -194,21 +480,21 @@ export const getStockHistory = async (user, { type, page = 1, limit = 20, branch
   return { items, pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / limit) } }
 }
 
+// ─── GET CURRENT STOCK ────────────────────────────────────────────────────────
+
 export const getCurrentStock = async (user, { branchId, categoryId, lowStock } = {}) => {
   const branchFilter = user.role === 'SUPER_ADMIN' ? (branchId ? { branchId } : {}) : { branchId: user.branchId }
 
   const stocks = await prisma.productStock.findMany({
-     where: {
-    ...branchFilter,
-
-    product: {
-      isActive: true,
-      ...(categoryId && { categoryId }),
+    where: {
+      ...branchFilter,
+      product: {
+        isActive: true,
+        ...(categoryId && { categoryId }),
+      },
     },
-  },
     include: {
       product: {
-        // where: { isActive: true, ...(categoryId && { categoryId }) },
         include: { category: { select: { id: true, name: true, color: true } } },
       },
       branch: { select: { id: true, name: true } },
@@ -221,6 +507,8 @@ export const getCurrentStock = async (user, { branchId, categoryId, lowStock } =
     ? filtered.filter(s => s.currentStock <= s.product.minStockAlert)
     : filtered
 }
+
+// ─── TRANSFER STOCK ───────────────────────────────────────────────────────────
 
 export const transferStock = async (data, user) => {
   const { fromBranchId, toBranchId, items, notes } = data
