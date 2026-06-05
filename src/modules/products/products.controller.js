@@ -26,7 +26,27 @@ export const create = async (req, res) => {
 
 export const update = async (req, res) => {
   const images = req.files?.length ? req.files.map(f => f.path) : undefined
-  const product = await productsService.updateProduct(req.params.id, { ...req.body, ...(images && { images }) })
+
+  const data = {
+    ...req.body,
+    ...(images && { images }),
+
+    // 🔥 FIX BOOLEAN
+    hasSerialNumbers:
+      req.body.hasSerialNumbers === "true" ||
+      req.body.hasSerialNumbers === true,
+  }
+
+  // 🔥 REMOVE undefined fields
+  const cleanData = Object.fromEntries(
+    Object.entries(data).filter(([_, v]) => v !== undefined)
+  )
+
+  const product = await productsService.updateProduct(
+    req.params.id,
+    cleanData
+  )
+
   sendSuccess(res, product, 'Product updated successfully.')
 }
 
