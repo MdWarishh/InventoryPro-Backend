@@ -373,7 +373,7 @@ export const updateInvoice = async (id, data, user) => {
         data: { currentStock: { decrement: Number(item.quantity) } },
       })
     }
-  })
+  },{ timeout: 30000, maxWait: 10000 })
 
   return getInvoiceById(id, user)
 }

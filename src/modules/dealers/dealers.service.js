@@ -208,35 +208,58 @@ export const getDealerStockInHistory = async (dealerId, { page = 1, limit = 20, 
 
 // ─── DEALER STOCK SUMMARY ────────────────────────────────────────────────────
 
-export const getDealerStockSummary = async (id) => {
-  const dealer = await prisma.dealer.findUnique({ where: { id } })
-  if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
+export const getDealerStockSummary = async (dealerId) => {
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
 
-  const stockInsRaw = await prisma.stockIn.groupBy({
-    by: ['productId'],
-    where: { dealerId: id },
-    _sum: { quantity: true },
-  })
-  const stockOutsRaw = await prisma.dealerStockOut.groupBy({
-    by: ['productId'],
-    where: { dealerId: id },
-    _sum: { quantity: true },
+  const stockIns = await prisma.stockIn.findMany({
+    where: { dealerId },
+include: { product: { select: { id: true, name: true, sku: true, hasSerialNumbers: true } } },
   })
 
-  const stockInMap = Object.fromEntries(stockInsRaw.map(s => [s.productId, s._sum.quantity || 0]))
-  const stockOutMap = Object.fromEntries(stockOutsRaw.map(s => [s.productId, s._sum.quantity || 0]))
-  const allProductIds = [...new Set([...Object.keys(stockInMap), ...Object.keys(stockOutMap)])]
-
-  const products = await prisma.product.findMany({
-    where: { id: { in: allProductIds } },
-    select: { id: true, name: true, sku: true, sellingPrice: true, hasSerialNumbers: true },
+  const stockOuts = await prisma.dealerStockOut.findMany({
+    where: { dealerId },
+    include: { product: { select: { id: true, name: true, sku: true, hasSerialNumbers: true } } },
   })
 
-  const summary = products.map(p => ({
-    product: p,
-    given: stockInMap[p.id] || 0,
-    sold: stockOutMap[p.id] || 0,
-    balance: (stockInMap[p.id] || 0) - (stockOutMap[p.id] || 0),
+  const stockOutsThisMonth = await prisma.dealerStockOut.findMany({
+    where: { dealerId, date: { gte: monthStart, lte: monthEnd } },
+    select: { productId: true, quantity: true },
+  })
+
+  const map = new Map()
+
+  for (const si of stockIns) {
+    const pid = si.productId
+    if (!map.has(pid)) {
+      map.set(pid, { product: si.product, given: 0, sold: 0, balance: 0, soldInMonth: 0, salesReturn: 0 })
+    }
+    const entry = map.get(pid)
+    if (si.sourceNote?.toUpperCase().includes('RETURN')) {
+      entry.salesReturn += si.quantity
+    } else {
+      entry.given += si.quantity
+    }
+  }
+
+  for (const so of stockOuts) {
+    const pid = so.productId
+    if (!map.has(pid)) {
+      map.set(pid, { product: so.product, given: 0, sold: 0, balance: 0, soldInMonth: 0, salesReturn: 0 })
+    }
+    map.get(pid).sold += so.quantity
+  }
+
+  for (const so of stockOutsThisMonth) {
+    if (map.has(so.productId)) {
+      map.get(so.productId).soldInMonth += so.quantity
+    }
+  }
+
+  const summary = Array.from(map.values()).map((entry) => ({
+    ...entry,
+    balance: entry.given - entry.sold + entry.salesReturn,
   }))
 
   return { summary }
@@ -259,10 +282,6 @@ export const getDealerSerials = async (dealerId, productId, branchId) => {
     where: {
       stockInId: { in: stockInIds },
       status: 'TRANSFERRED',
-      OR: [                                    // ← FIX: OR instead of in: [..., null]
-        { dealerBillingStatus: 'UNBILLED' },
-        { dealerBillingStatus: null },
-      ],
       ...(productId && { productId }),
     },
     select: { id: true, serialNumber: true, status: true, dealerBillingStatus: true },
