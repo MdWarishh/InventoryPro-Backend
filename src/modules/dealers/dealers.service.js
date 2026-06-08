@@ -2,6 +2,25 @@ import prisma from '../../config/db.js'
 
 // ─── DEALERS CRUD ────────────────────────────────────────────────────────────
 
+const getDealerProductBalance = async (dealerId, productId) => {
+  const stockIns = await prisma.stockIn.findMany({
+    where: { dealerId, productId },
+    select: { quantity: true, sourceNote: true },
+  })
+ 
+  const totalGiven = stockIns
+    .filter(si => !si.sourceNote?.toUpperCase().includes('SALES RETURN'))
+    .reduce((sum, si) => sum + si.quantity, 0)
+ 
+  const totalOut = await prisma.dealerStockOut.aggregate({
+    where: { dealerId, productId },
+    _sum: { quantity: true },
+  })
+ 
+  return totalGiven - (totalOut._sum.quantity || 0)
+}
+ 
+
 export const getAllDealers = async ({ page = 1, limit = 20, search } = {}) => {
   const skip = (page - 1) * limit
   const where = { isActive: true }
@@ -208,41 +227,99 @@ export const getDealerStockInHistory = async (dealerId, { page = 1, limit = 20, 
 
 // ─── DEALER STOCK SUMMARY ────────────────────────────────────────────────────
 
+// export const getDealerStockSummary = async (dealerId) => {
+//   const now = new Date()
+//   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+//   const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
+
+//   const stockIns = await prisma.stockIn.findMany({
+//     where: { dealerId },
+// include: { product: { select: { id: true, name: true, sku: true, hasSerialNumbers: true } } },
+//   })
+
+//   const stockOuts = await prisma.dealerStockOut.findMany({
+//     where: { dealerId },
+//     include: { product: { select: { id: true, name: true, sku: true, hasSerialNumbers: true } } },
+//   })
+
+//   const stockOutsThisMonth = await prisma.dealerStockOut.findMany({
+//     where: { dealerId, date: { gte: monthStart, lte: monthEnd } },
+//     select: { productId: true, quantity: true },
+//   })
+
+//   const map = new Map()
+
+//   for (const si of stockIns) {
+//     const pid = si.productId
+//     if (!map.has(pid)) {
+//       map.set(pid, { product: si.product, given: 0, sold: 0, balance: 0, soldInMonth: 0, salesReturn: 0 })
+//     }
+//     const entry = map.get(pid)
+//     if (si.sourceNote?.toUpperCase().includes('RETURN')) {
+//       entry.salesReturn += si.quantity
+//     } else {
+//       entry.given += si.quantity
+//     }
+//   }
+
+//   for (const so of stockOuts) {
+//     const pid = so.productId
+//     if (!map.has(pid)) {
+//       map.set(pid, { product: so.product, given: 0, sold: 0, balance: 0, soldInMonth: 0, salesReturn: 0 })
+//     }
+//     map.get(pid).sold += so.quantity
+//   }
+
+//   for (const so of stockOutsThisMonth) {
+//     if (map.has(so.productId)) {
+//       map.get(so.productId).soldInMonth += so.quantity
+//     }
+//   }
+
+//   const summary = Array.from(map.values()).map((entry) => ({
+//     ...entry,
+//     balance: entry.given - entry.sold + entry.salesReturn,
+//   }))
+
+//   return { summary }
+// }
+
 export const getDealerStockSummary = async (dealerId) => {
   const now = new Date()
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
   const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
-
+ 
   const stockIns = await prisma.stockIn.findMany({
     where: { dealerId },
-include: { product: { select: { id: true, name: true, sku: true, hasSerialNumbers: true } } },
+    include: { product: { select: { id: true, name: true, sku: true, hasSerialNumbers: true } } },
   })
-
+ 
   const stockOuts = await prisma.dealerStockOut.findMany({
     where: { dealerId },
     include: { product: { select: { id: true, name: true, sku: true, hasSerialNumbers: true } } },
   })
-
+ 
   const stockOutsThisMonth = await prisma.dealerStockOut.findMany({
     where: { dealerId, date: { gte: monthStart, lte: monthEnd } },
     select: { productId: true, quantity: true },
   })
-
+ 
   const map = new Map()
-
+ 
   for (const si of stockIns) {
     const pid = si.productId
     if (!map.has(pid)) {
       map.set(pid, { product: si.product, given: 0, sold: 0, balance: 0, soldInMonth: 0, salesReturn: 0 })
     }
     const entry = map.get(pid)
-    if (si.sourceNote?.toUpperCase().includes('RETURN')) {
+    if (si.sourceNote?.toUpperCase().includes('SALES RETURN')) {
+      // Return = stock wapas branch mein gaya, dealer ke balance mein COUNT NAHI hoga
       entry.salesReturn += si.quantity
     } else {
       entry.given += si.quantity
     }
   }
-
+ 
   for (const so of stockOuts) {
     const pid = so.productId
     if (!map.has(pid)) {
@@ -250,18 +327,21 @@ include: { product: { select: { id: true, name: true, sku: true, hasSerialNumber
     }
     map.get(pid).sold += so.quantity
   }
-
+ 
   for (const so of stockOutsThisMonth) {
     if (map.has(so.productId)) {
       map.get(so.productId).soldInMonth += so.quantity
     }
   }
-
+ 
   const summary = Array.from(map.values()).map((entry) => ({
     ...entry,
-    balance: entry.given - entry.sold + entry.salesReturn,
+    // FIX: balance = given - sold only
+    // salesReturn dealer ke balance mein add nahi hoga
+    // (returned stock branch mein wapas aa gaya — dealer ke paas nahi)
+    balance: entry.given - entry.sold - entry.salesReturn,
   }))
-
+ 
   return { summary }
 }
 
@@ -565,3 +645,110 @@ export const getDealerMainInvoices = async (dealerId, { page = 1, limit = 20 } =
     pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
   }
 }
+
+
+
+export const createDealerSalesReturn = async (dealerId, data, createdBy) => {
+  const { productId, branchId, quantity, serialNumberIds, notes, date } = data
+ 
+  const dealer = await prisma.dealer.findUnique({ where: { id: dealerId } })
+  if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
+ 
+  const product = await prisma.product.findUnique({ where: { id: productId } })
+  if (!product) throw { statusCode: 404, message: 'Product not found.' }
+ 
+  // Serial product ke liye serialNumberIds mandatory
+  if (product.hasSerialNumbers) {
+    if (!serialNumberIds?.length)
+      throw { statusCode: 400, message: 'Serial numbers are required for this product.' }
+    if (serialNumberIds.length !== Number(quantity))
+      throw { statusCode: 400, message: `Select exactly ${quantity} serial number(s).` }
+  }
+ 
+  // Check dealer ke paas itna balance hai?
+  const [totalIn, totalOut] = await Promise.all([
+    prisma.stockIn.aggregate({ where: { dealerId, productId }, _sum: { quantity: true } }),
+    prisma.dealerStockOut.aggregate({ where: { dealerId, productId }, _sum: { quantity: true } }),
+  ])
+  const dealerBalance = (totalIn._sum.quantity || 0) - (totalOut._sum.quantity || 0)
+  if (Number(quantity) > dealerBalance)
+    throw { statusCode: 400, message: `Dealer balance insufficient for return. Current balance: ${dealerBalance}` }
+ 
+  // Branchwise ProductStock exist karna chahiye (upsert safe hai)
+  const productStock = await prisma.productStock.findUnique({
+    where: { productId_branchId: { productId, branchId } },
+  })
+ 
+  let stockInId
+  await prisma.$transaction(async (tx) => {
+    // StockIn create — sourceNote "SALES RETURN:" se shuru karo taaki summary mein count ho
+    const stockIn = await tx.stockIn.create({
+      data: {
+        productId,
+        branchId,
+        quantity: Number(quantity),
+        purchasePrice: 0, // return hai, cost 0
+        dealerId,
+        sourceNote: `SALES RETURN: ${dealer.name}${notes ? ' — ' + notes : ''}`,
+        date: date ? new Date(date) : new Date(),
+        createdBy,
+      },
+    })
+    stockInId = stockIn.id
+ 
+    if (product.hasSerialNumbers && serialNumberIds?.length) {
+      // Verify — ye serials TRANSFERRED hain aur is dealer ke stockIn se linked hain
+      const dealerStockInIds = await tx.stockIn.findMany({
+        where: { dealerId, productId },
+        select: { id: true },
+      })
+      const validStockInIds = dealerStockInIds.map(s => s.id)
+ 
+      const serials = await tx.serialNumber.findMany({
+        where: {
+          id: { in: serialNumberIds },
+          status: 'TRANSFERRED',
+          stockInId: { in: validStockInIds },
+        },
+        select: { id: true },
+      })
+      if (serials.length !== serialNumberIds.length)
+        throw { statusCode: 400, message: 'Some serial numbers are not valid / not with this dealer.' }
+ 
+      // Reset serials → AVAILABLE, clear dealer fields, link to new stockIn
+      await tx.serialNumber.updateMany({
+        where: { id: { in: serialNumberIds } },
+        data: {
+          status: 'AVAILABLE',
+          dealerBillingStatus: null,
+          dealerInvoiceId: null,
+          dealerStockOutId: null,
+          stockInId: stockIn.id, // naye return stockIn se link
+        },
+      })
+    }
+ 
+    // ProductStock branch mein increment
+    if (productStock) {
+      await tx.productStock.update({
+        where: { productId_branchId: { productId, branchId } },
+        data: { currentStock: { increment: Number(quantity) } },
+      })
+    } else {
+      // ProductStock exist nahi karta → create karo
+      await tx.productStock.create({
+        data: { productId, branchId, currentStock: Number(quantity) },
+      })
+    }
+  }, { timeout: 15000 })
+ 
+  return prisma.stockIn.findUnique({
+    where: { id: stockInId },
+    include: {
+      product: { select: { id: true, name: true, sku: true } },
+      branch: { select: { id: true, name: true } },
+      serialNumbers: { select: { id: true, serialNumber: true, status: true } },
+    },
+  })
+}
+ 

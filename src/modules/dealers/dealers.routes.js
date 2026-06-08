@@ -31,6 +31,8 @@ router.post('/:id/stock-in', isAdminOrAbove, dealersController.createStockIn)
 router.get('/:id/stock-out',  dealersController.getStockOutHistory)
 router.post('/:id/stock-out', isAdminOrAbove, dealersController.createStockOut)
 
+router.post('/:id/stock-return', isAdminOrAbove, dealersController.createSalesReturn)
+
 // ─── OLD DEALER INVOICES (backward compat — DealerInvoice model) ──────────────
 router.get('/:id/invoices',            isAdminOrAbove, dealersController.getInvoices)
 router.post('/:id/invoices',           isAdminOrAbove, dealersController.createInvoice)

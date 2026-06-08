@@ -96,3 +96,8 @@ export const getMainInvoices = async (req, res) => {
   const result = await dealersService.getDealerMainInvoices(req.params.id, req.query)
   sendSuccess(res, result)
 }
+
+export const createSalesReturn = async (req, res) => {
+  const stockIn = await dealersService.createDealerSalesReturn(req.params.id, req.body, req.user.id)
+  sendSuccess(res, stockIn, 'Sales return recorded successfully.', 201)
+}
