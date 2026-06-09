@@ -508,6 +508,54 @@ export const getCurrentStock = async (user, { branchId, categoryId, lowStock } =
     : filtered
 }
 
+// ─── GET PRODUCTS WITH STOCK > 0 (for invoice/dealer dropdowns) ──────────────
+
+export const getProductsWithStock = async (user, { branchId, categoryId, search } = {}) => {
+  const branchFilter = user.role === 'SUPER_ADMIN'
+    ? (branchId ? { branchId } : {})
+    : { branchId: user.branchId }
+
+  const stocks = await prisma.productStock.findMany({
+    where: {
+      ...branchFilter,
+      currentStock: { gt: 0 },          // ← sirf wahi products jinka stock > 0 hai
+      product: {
+        isActive: true,
+        ...(categoryId && { categoryId }),
+        ...(search && {
+          name: { contains: search, mode: 'insensitive' },
+        }),
+      },
+    },
+    select: {
+      currentStock: true,
+      branchId: true,
+      product: {
+        select: {
+          id: true,
+          name: true,
+          sku: true,
+          brand: true,
+          sellingPrice: true,
+          hasSerialNumbers: true,
+          minStockAlert: true,
+          category: { select: { id: true, name: true, color: true } },
+        },
+      },
+    },
+    orderBy: { product: { name: 'asc' } },
+  })
+
+  // Response format: product fields + currentStock merged
+  return stocks
+    .filter(s => s.product)
+    .map(s => ({
+      ...s.product,
+      currentStock: s.currentStock,
+      branchId: s.branchId,
+    }))
+}
+
 // ─── TRANSFER STOCK ───────────────────────────────────────────────────────────
 
 export const transferStock = async (data, user) => {

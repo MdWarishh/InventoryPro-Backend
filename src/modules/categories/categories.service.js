@@ -1,8 +1,16 @@
 import prisma from '../../config/db.js'
 
-export const getAllCategories = async (user, { search } = {}) => {
+export const getAllCategories = async (user, { search, branchId } = {}) => {
   const where = {}
-  if (user.role !== 'SUPER_ADMIN') where.OR = [{ branchId: user.branchId }, { branchId: null }]
+
+  if (user.role !== 'SUPER_ADMIN') {
+    where.OR = [{ branchId: user.branchId }, { branchId: null }]
+  } else if (branchId) {
+    // ✅ SUPER_ADMIN ne specific branch select ki hai
+    where.OR = [{ branchId }, { branchId: null }]
+  }
+  // SUPER_ADMIN + no branchId = saari categories (kuch mat lagao)
+
   if (search) where.name = { contains: search, mode: 'insensitive' }
 
   return prisma.category.findMany({

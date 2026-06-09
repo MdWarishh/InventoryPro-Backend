@@ -41,6 +41,11 @@ export const getCurrentStock = async (req, res) => {
   sendSuccess(res, stock)
 }
 
+export const getProductsWithStock = async (req, res) => {
+  const products = await stockService.getProductsWithStock(req.user, req.query)
+  sendSuccess(res, products)
+}
+
 export const transferStock = async (req, res) => {
   const transfer = await stockService.transferStock(req.body, req.user)
   sendSuccess(res, transfer, 'Stock transferred successfully.', 201)

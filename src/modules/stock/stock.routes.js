@@ -19,6 +19,7 @@ router.delete('/out/:id', isAdminOrAbove, stockController.deleteStockOut)
 
 // ── Misc ──────────────────────────────────────────────────────────────────────
 router.get('/current', stockController.getCurrentStock)
+router.get('/products-in-stock', stockController.getProductsWithStock)   
 router.get('/history/:type', stockController.getHistory)
 router.post('/transfer', isSuperAdmin, stockController.transferStock)
 

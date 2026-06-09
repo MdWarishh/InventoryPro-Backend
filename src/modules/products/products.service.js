@@ -12,18 +12,23 @@ export const getAllProducts = async (user, { page = 1, limit = 20, search, categ
   ]
   if (categoryId) where.categoryId = categoryId
 
+
+    const effectiveBranchId = user.role === 'SUPER_ADMIN' ? (branchId || null) : user.branchId
+  if (effectiveBranchId) {
+    where.productStocks = { some: { branchId: effectiveBranchId } }
+  }
+
   const products = await prisma.product.findMany({
     where,
     skip,
     take: Number(limit),
     include: {
       category: { select: { id: true, name: true, color: true } },
-      productStocks: {
-        where: user.role === 'SUPER_ADMIN'
-          ? (branchId ? { branchId } : {})
-          : { branchId: user.branchId },
+           productStocks: {
+        where: effectiveBranchId ? { branchId: effectiveBranchId } : {}, 
         include: { branch: { select: { id: true, name: true } } },
       },
+
     },
     orderBy: { createdAt: 'desc' },
   })
@@ -64,7 +69,11 @@ export const getProductById = async (id, user) => {
 }
 
 export const createProduct = async (data, user) => {
-  const { name, sku, description, categoryId, unit, purchasePrice, sellingPrice, gstRate, hsnCode, minStockAlert, images, barcode, hasSerialNumbers } = data
+  const { 
+    name, sku, description, categoryId, unit, purchasePrice, 
+    sellingPrice, gstRate, hsnCode, minStockAlert, images, 
+    barcode, hasSerialNumbers, branchIds  // ✅ branchIds destructure karo
+  } = data
 
   const finalSKU = sku || await generateSKU(data.categoryName)
 
@@ -85,13 +94,35 @@ export const createProduct = async (data, user) => {
     include: { category: true },
   })
 
-  // SUPER_ADMIN ke liye saari branches me stock, baaki ke liye sirf apni branch
   if (user.role === 'SUPER_ADMIN') {
-    const branches = await prisma.branch.findMany({ where: { isActive: true }, select: { id: true } })
-    await prisma.productStock.createMany({
-      data: branches.map(b => ({ productId: product.id, branchId: b.id, currentStock: 0 })),
-      skipDuplicates: true,
-    })
+    // ✅ branchIds[] aaya hai to sirf unhi mein, warna saari branches mein
+    const parsedBranchIds = (() => {
+      if (!branchIds) return null
+      if (Array.isArray(branchIds)) return branchIds.filter(Boolean)
+      // FormData se string aa sakti hai: "id1,id2" ya single id
+      const arr = String(branchIds).split(',').map(s => s.trim()).filter(Boolean)
+      return arr.length > 0 ? arr : null
+    })()
+
+    if (parsedBranchIds && parsedBranchIds.length > 0) {
+      // Sirf selected branches mein
+      await prisma.productStock.createMany({
+        data: parsedBranchIds.map(branchId => ({ 
+          productId: product.id, branchId, currentStock: 0 
+        })),
+        skipDuplicates: true,
+      })
+    } else {
+      // Koi branch select nahi = saari branches mein
+      const branches = await prisma.branch.findMany({ 
+        where: { isActive: true }, 
+        select: { id: true } 
+      })
+      await prisma.productStock.createMany({
+        data: branches.map(b => ({ productId: product.id, branchId: b.id, currentStock: 0 })),
+        skipDuplicates: true,
+      })
+    }
   } else if (user.branchId) {
     await prisma.productStock.create({
       data: { productId: product.id, branchId: user.branchId, currentStock: 0 },
