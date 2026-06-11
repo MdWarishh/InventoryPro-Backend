@@ -75,14 +75,15 @@ export const createProduct = async (data, user) => {
     barcode, hasSerialNumbers, branchIds  // ✅ branchIds destructure karo
   } = data
 
-  const finalSKU = sku || await generateSKU(data.categoryName)
+ const finalSKU = sku || await generateSKU(data.categoryName || 'GEN')
 
   const existing = await prisma.product.findUnique({ where: { sku: finalSKU } })
   if (existing) throw { statusCode: 409, message: 'SKU already exists.' }
 
   const product = await prisma.product.create({
     data: {
-      name, sku: finalSKU, description, categoryId,
+     name, sku: finalSKU, description,
+  ...(categoryId && { categoryId }), 
       unit: unit || 'pcs',
       purchasePrice: Number(purchasePrice) || 0,
       sellingPrice: Number(sellingPrice) || 0,

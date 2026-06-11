@@ -63,6 +63,12 @@ export const stockIn = async (data, user) => {
       create: { productId, branchId, currentStock: Number(quantity) },
     })
 
+
+    await tx.product.update({
+  where: { id: productId },
+  data: { purchasePrice: Number(purchasePrice) },
+})
+
     return stockInRecord
   })
 
@@ -149,6 +155,11 @@ export const updateStockIn = async (id, data, user) => {
         })),
       })
     }
+
+    await tx.product.update({
+  where: { id: existing.productId },
+  data: { purchasePrice: Number(purchasePrice) },
+})
 
     return tx.stockIn.update({
       where: { id },
