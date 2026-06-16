@@ -4,9 +4,15 @@ import { sendSuccess, sendPaginated } from '../../utils/response.js'
 // ─── DEALERS CRUD ─────────────────────────────────────────────────────────────
 
 export const getAll = async (req, res) => {
-  const result = await dealersService.getAllDealers(req.query)
+  // Non-admin apna branch hi dekhega
+  const branchId = req.user.role === 'SUPER_ADMIN'
+    ? req.query.branchId
+    : req.user.branchId
+
+  const result = await dealersService.getAllDealers({ ...req.query, branchId })
   sendPaginated(res, result.dealers, result.pagination)
 }
+
 
 export const getById = async (req, res) => {
   const dealer = await dealersService.getDealerById(req.params.id)
@@ -14,9 +20,15 @@ export const getById = async (req, res) => {
 }
 
 export const create = async (req, res) => {
-  const dealer = await dealersService.createDealer(req.body)
+  // Non-admin ka branchId auto-set
+  const branchId = req.user.role === 'SUPER_ADMIN'
+    ? req.body.branchId
+    : req.user.branchId
+
+  const dealer = await dealersService.createDealer({ ...req.body, branchId })
   sendSuccess(res, dealer, 'Dealer created successfully.', 201)
 }
+
 
 export const update = async (req, res) => {
   const dealer = await dealersService.updateDealer(req.params.id, req.body)

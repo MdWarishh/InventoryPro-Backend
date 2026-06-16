@@ -1,4 +1,4 @@
-// ─── expenses.service.js — updated with permission-aware queries ─────────────
+// ─── expenses.service.js ─────────────────────────────────────────────────────
 // Backend mein Module enum mein EXPENSES add karna zaroori hai:
 //
 //   enum Module {
@@ -7,9 +7,6 @@
 //   }
 //
 // Phir `npx prisma migrate dev --name add_expenses_module` run karo.
-//
-// Yeh service file unchanged hai — permission check middleware level pe hoti hai.
-// Neeche dekho expenses.routes.js update.
 
 import prisma from '../../config/db.js'
 import { startOfMonth, endOfMonth, startOfDay, endOfDay } from 'date-fns'
@@ -43,13 +40,27 @@ export const createExpense = async (data, user) => {
 }
 
 export const getExpenses = async (query, user) => {
-  const { startDate, endDate, category, paymentMethod, page = 1, limit = 50 } = query
+  const {
+    startDate,
+    endDate,
+    category,
+    paymentMethod,
+    page = 1,
+    limit = 50,
+    branchId,          // ← NEW: SUPER_ADMIN selected branch
+  } = query
+
   const where = {
-    branchId: user.role === 'SUPER_ADMIN' ? undefined : (user.branchId || undefined),
+    // SUPER_ADMIN: agar branchId query mein hai to filter karo, warna all branches
+    // Other roles: apni branch ka hi data
+    branchId: user.role === 'SUPER_ADMIN'
+      ? (branchId || undefined)
+      : (user.branchId || undefined),
     date: startDate || endDate ? parseDateRange(startDate, endDate) : currentMonthRange(),
     ...(category && { category }),
     ...(paymentMethod && { paymentMethod }),
   }
+
   const [expenses, total] = await Promise.all([
     prisma.expense.findMany({
       where,
@@ -60,6 +71,7 @@ export const getExpenses = async (query, user) => {
     }),
     prisma.expense.count({ where }),
   ])
+
   return { expenses, total, page: Number(page), limit: Number(limit) }
 }
 
@@ -70,6 +82,7 @@ export const updateExpense = async (id, data, user) => {
     throw { statusCode: 403, message: 'Access denied.' }
   if (data.amount !== undefined && (isNaN(data.amount) || Number(data.amount) <= 0))
     throw { statusCode: 400, message: 'Amount must be a positive number.' }
+
   return prisma.expense.update({
     where: { id },
     data: {
@@ -92,7 +105,14 @@ export const deleteExpense = async (id, user) => {
 }
 
 export const getExpenseStats = async (query, user) => {
-  const { month, year, startDate, endDate } = query
+  const {
+    month,
+    year,
+    startDate,
+    endDate,
+    branchId,          // ← NEW: SUPER_ADMIN selected branch
+  } = query
+
   let dateFilter
   if (startDate || endDate) {
     dateFilter = parseDateRange(startDate, endDate)
@@ -104,7 +124,11 @@ export const getExpenseStats = async (query, user) => {
   }
 
   const where = {
-    branchId: user.role === 'SUPER_ADMIN' ? undefined : (user.branchId || undefined),
+    // SUPER_ADMIN: agar branchId query mein hai to filter karo, warna all branches
+    // Other roles: apni branch ka hi data
+    branchId: user.role === 'SUPER_ADMIN'
+      ? (branchId || undefined)
+      : (user.branchId || undefined),
     date: dateFilter,
   }
 
@@ -114,34 +138,58 @@ export const getExpenseStats = async (query, user) => {
   })
 
   if (expenses.length === 0) {
-    return { total: 0, count: 0, todayTotal: 0, averageDaily: 0, highestDay: null, categoryBreakdown: [], paymentMethodBreakdown: [], dailyBreakdown: [] }
+    return {
+      total: 0,
+      count: 0,
+      todayTotal: 0,
+      averageDaily: 0,
+      highestDay: null,
+      categoryBreakdown: [],
+      paymentMethodBreakdown: [],
+      dailyBreakdown: [],
+    }
   }
 
   const total = expenses.reduce((sum, e) => sum + e.amount, 0)
+
   const todayStart = startOfDay(new Date())
   const todayEnd = endOfDay(new Date())
-  const todayTotal = expenses.filter(e => e.date >= todayStart && e.date <= todayEnd).reduce((sum, e) => sum + e.amount, 0)
+  const todayTotal = expenses
+    .filter((e) => e.date >= todayStart && e.date <= todayEnd)
+    .reduce((sum, e) => sum + e.amount, 0)
 
   const dailyMap = {}
   for (const e of expenses) {
     const key = e.date.toISOString().split('T')[0]
     dailyMap[key] = (dailyMap[key] || 0) + e.amount
   }
-  const dailyBreakdown = Object.entries(dailyMap).map(([date, amount]) => ({ date, amount })).sort((a, b) => a.date.localeCompare(b.date))
+  const dailyBreakdown = Object.entries(dailyMap)
+    .map(([date, amount]) => ({ date, amount }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+
   const uniqueDays = dailyBreakdown.length
   const averageDaily = uniqueDays > 0 ? total / uniqueDays : 0
-  const highestDay = dailyBreakdown.reduce((max, d) => (d.amount > (max?.amount || 0) ? d : max), null)
+  const highestDay = dailyBreakdown.reduce(
+    (max, d) => (d.amount > (max?.amount || 0) ? d : max),
+    null
+  )
 
   const categoryMap = {}
   for (const e of expenses) {
     const key = e.category || 'Uncategorized'
     categoryMap[key] = (categoryMap[key] || 0) + e.amount
   }
-  const categoryBreakdown = Object.entries(categoryMap).map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount)
+  const categoryBreakdown = Object.entries(categoryMap)
+    .map(([category, amount]) => ({ category, amount }))
+    .sort((a, b) => b.amount - a.amount)
 
   const pmMap = {}
-  for (const e of expenses) { pmMap[e.paymentMethod] = (pmMap[e.paymentMethod] || 0) + e.amount }
-  const paymentMethodBreakdown = Object.entries(pmMap).map(([method, amount]) => ({ method, amount })).sort((a, b) => b.amount - a.amount)
+  for (const e of expenses) {
+    pmMap[e.paymentMethod] = (pmMap[e.paymentMethod] || 0) + e.amount
+  }
+  const paymentMethodBreakdown = Object.entries(pmMap)
+    .map(([method, amount]) => ({ method, amount }))
+    .sort((a, b) => b.amount - a.amount)
 
   return {
     total: Math.round(total * 100) / 100,

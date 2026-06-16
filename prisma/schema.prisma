@@ -152,6 +152,7 @@ model Branch {
   settings        Settings?
   stockIns        StockIn[]
   stockOuts       StockOut[]
+  dealers         Dealer[] 
   dealerStockOuts DealerStockOut[]
   transfersFrom   StockTransfer[]  @relation("TransferFrom")
   transfersTo     StockTransfer[]  @relation("TransferTo")
@@ -258,6 +259,8 @@ model Dealer {
   ifscCode    String?
   isActive    Boolean          @default(true)
   notes       String?
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id])
   stockOuts   DealerStockOut[]
   invoices        DealerInvoice[]
   mainInvoices    Invoice[]

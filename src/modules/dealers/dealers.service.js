@@ -21,17 +21,20 @@ const getDealerProductBalance = async (dealerId, productId) => {
 }
  
 
-export const getAllDealers = async ({ page = 1, limit = 20, search } = {}) => {
+export const getAllDealers = async ({ page = 1, limit = 20, search, branchId } = {}) => {
   const skip = (page - 1) * limit
-  const where = { isActive: true }
-
-  if (search) where.OR = [
-    { name: { contains: search, mode: 'insensitive' } },
-    { phone: { contains: search } },
-    { email: { contains: search, mode: 'insensitive' } },
-    { gstNumber: { contains: search } },
-    { city: { contains: search, mode: 'insensitive' } },
-  ]
+  const where = {
+    isActive: true,
+    ...(branchId && { branchId }),           
+    ...(search && {
+      OR: [
+        { name:      { contains: search, mode: 'insensitive' } },
+        { phone:     { contains: search, mode: 'insensitive' } },
+        { email:     { contains: search, mode: 'insensitive' } },
+        { gstNumber: { contains: search, mode: 'insensitive' } },
+      ],
+    }),
+  }
 
   const [dealers, total] = await Promise.all([
     prisma.dealer.findMany({
@@ -101,7 +104,15 @@ export const getDealerById = async (id) => {
   }
 }
 
-export const createDealer = async (data) => prisma.dealer.create({ data })
+export const createDealer = async (data) => {
+  const { branchId, ...rest } = data
+  return prisma.dealer.create({
+    data: {
+      ...rest,
+      ...(branchId && { branchId }),    
+    },
+  })
+}
 
 export const updateDealer = async (id, data) => {
   const dealer = await prisma.dealer.findUnique({ where: { id } })
