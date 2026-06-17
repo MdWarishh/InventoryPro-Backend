@@ -138,22 +138,27 @@ export const getTodayStatus = async (userId, branchId) => {
 // ─── admin: list all attendance (with filters) ────────────────
 
 export const getAllAttendance = async (user, query) => {
-  const { startDate, endDate, month, year, userId: filterUserId, page = 1, limit = 50 } = query
+  const { startDate, endDate, month, year, userId: filterUserId, branchId, page = 1, limit = 50 } = query
 
   const where = {}
 
-  // branch scope
-  if (user.role !== 'SUPER_ADMIN') {
+  // Branch scope
+  if (user.role === 'SUPER_ADMIN') {
+    // SUPER_ADMIN: agar branchId query mein hai to filter karo, warna sab dikhao
+    if (branchId) {
+      where.user = { branchId }
+    }
+  } else {
+    // Non-admin: sirf apni branch
     where.user = { branchId: user.branchId }
   }
 
-  // user filter
+  // Baaki sab same...
   if (filterUserId) where.userId = filterUserId
 
-  // date filters
   if (month && year) {
     const from = toDateOnly(new Date(year, month - 1, 1))
-    const to = toDateOnly(new Date(year, month, 0))          // last day of month
+    const to = toDateOnly(new Date(year, month, 0))
     to.setUTCHours(23, 59, 59, 999)
     where.date = { gte: from, lte: to }
   } else if (startDate && endDate) {
@@ -173,6 +178,7 @@ export const getAllAttendance = async (user, query) => {
 
   return { records, total, page: Number(page), limit: Number(limit) }
 }
+
 
 // ─── admin: single user monthly attendance ────────────────────
 

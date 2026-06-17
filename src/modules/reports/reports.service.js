@@ -2,8 +2,18 @@ import prisma from '../../config/db.js'
 import { generateExcelReport } from '../../utils/excelParser.js'
 
 const getBranchFilter = (user, branchId) => {
-  if (user.role === 'SUPER_ADMIN') return branchId ? { branchId } : {}
-  return { branchId: user.branchId }
+  // Sanitize: agar branchId object aa gaya (e.g. { branchId: "..." }) toh unwrap karo
+  const resolvedBranchId = typeof branchId === 'object' && branchId !== null
+    ? branchId.branchId
+    : branchId
+
+  if (user.role === 'SUPER_ADMIN') return resolvedBranchId ? { branchId: resolvedBranchId } : {}
+
+  const userBranchId = typeof user.branchId === 'object' && user.branchId !== null
+    ? user.branchId.branchId
+    : user.branchId
+
+  return userBranchId ? { branchId: userBranchId } : {}
 }
 
 export const getDashboardStats = async (user, branchId) => {
