@@ -117,7 +117,17 @@ export const createDealer = async (data) => {
 export const updateDealer = async (id, data) => {
   const dealer = await prisma.dealer.findUnique({ where: { id } })
   if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
-  return prisma.dealer.update({ where: { id }, data })
+
+  const { branchId, ...rest } = data
+
+  // branchId valid hai tabhi use karo, warna ignore (purana wala hi rahega)
+  if (branchId) {
+    const branch = await prisma.branch.findUnique({ where: { id: branchId } })
+    if (!branch) throw { statusCode: 400, message: 'Invalid branch selected.' }
+    rest.branchId = branchId
+  }
+
+  return prisma.dealer.update({ where: { id }, data: rest })
 }
 
 export const deleteDealer = async (id) => {

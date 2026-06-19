@@ -31,7 +31,11 @@ export const create = async (req, res) => {
 
 
 export const update = async (req, res) => {
-  const dealer = await dealersService.updateDealer(req.params.id, req.body)
+  const branchId = req.user.role === 'SUPER_ADMIN'
+    ? req.body.branchId
+    : req.user.branchId
+
+  const dealer = await dealersService.updateDealer(req.params.id, { ...req.body, branchId })
   sendSuccess(res, dealer, 'Dealer updated successfully.')
 }
 
