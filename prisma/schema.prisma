@@ -21,6 +21,7 @@ enum SerialStatus {
   SOLD
   DAMAGED
   TRANSFERRED
+  DEALER_HISTORICAL
 }
 
 enum MeetingType {
@@ -87,6 +88,7 @@ enum AttendanceStatus {
   PRESENT    
   HALF_DAY    
   ABSENT    
+  LEAVE
 }
 
 enum DealerBillingStatus {
@@ -203,6 +205,7 @@ model Product {
   stockOuts        StockOut[]
   dealerStockOuts  DealerStockOut[]
   transferItems    StockTransferItem[]
+  dealerHistoricalStocks DealerHistoricalStock[]
 
   @@map("products")
 }
@@ -238,7 +241,10 @@ model SerialNumber {
   dealerStockOut  DealerStockOut? @relation(fields: [dealerStockOutId], references: [id])
   dealerBillingStatus  DealerBillingStatus?  
   dealerInvoiceId      String? 
-  dealerInvoice  Invoice?  @relation("DealerSerialInvoice", fields: [dealerInvoiceId], references: [id])               
+  dealerInvoice  Invoice?  @relation("DealerSerialInvoice", fields: [dealerInvoiceId], references: [id])        
+  historicalStockId  String?               
+  historicalStock    DealerHistoricalStock? @relation(fields: [historicalStockId], references: [id])
+       
 
 
   @@unique([serialNumber, productId])
@@ -267,6 +273,7 @@ model Dealer {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
   stockIns    StockIn[]
+  historicalStocks DealerHistoricalStock[]
 
   @@map("dealers")
 }
@@ -304,6 +311,34 @@ model DealerInvoice {
   dealer Dealer @relation(fields: [dealerId], references: [id])
 
   @@map("dealer_invoices")
+}
+
+model DealerHistoricalStock {
+  id            String   @id @default(cuid())
+  dealerId      String
+  productId     String?              // null if free-text product
+  productName   String               // always store name (free-text ya product ka)
+  serialNumbers String[]             // manually typed serial numbers array
+  type          DealerHistoricalType // IN or OUT
+  quantity      Int
+  purchasePrice Float    @default(0)
+  salePrice     Float    @default(0)
+  date          DateTime @default(now())
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  dealer        Dealer   @relation(fields: [dealerId], references: [id])
+  product       Product? @relation(fields: [productId], references: [id])
+  usedSerialNumbers  String[]  @default([])  
+  serialNumberRecords SerialNumber[]  
+
+  @@index([dealerId])
+  @@map("dealer_historical_stocks")
+}
+
+enum DealerHistoricalType {
+  IN
+  OUT
 }
 
 model StockIn {

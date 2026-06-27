@@ -2,18 +2,15 @@ import prisma from '../../config/db.js'
 
 // ─── helpers ────────────────────────────────────────────────
 
-/** Returns midnight UTC for a given date (or today) — used as the "date" key */
 const toDateOnly = (d = new Date()) => {
   const dt = new Date(d)
   dt.setUTCHours(0, 0, 0, 0)
   return dt
 }
 
-/** Calculates difference in hours (float, 2 dp) between two Date objects */
 const hoursBetween = (start, end) =>
   Math.round(((end - start) / 3_600_000) * 100) / 100
 
-/** Derives status from totalHours */
 const deriveStatus = (totalHours) => {
   if (totalHours === null || totalHours === undefined) return 'ABSENT'
   if (totalHours >= 8) return 'PRESENT'
@@ -87,7 +84,6 @@ export const checkOut = async (userId, branchId) => {
     throw { statusCode: 400, message: 'You have already checked out today.' }
   }
 
-  // ── minimum hours enforcement ──
   const settings = await prisma.attendanceSettings.findUnique({ where: { branchId } })
   if (settings?.minimumWorkingHours) {
     const minMs = settings.minimumWorkingHours * 3_600_000
@@ -142,18 +138,14 @@ export const getAllAttendance = async (user, query) => {
 
   const where = {}
 
-  // Branch scope
   if (user.role === 'SUPER_ADMIN') {
-    // SUPER_ADMIN: agar branchId query mein hai to filter karo, warna sab dikhao
     if (branchId) {
       where.user = { branchId }
     }
   } else {
-    // Non-admin: sirf apni branch
     where.user = { branchId: user.branchId }
   }
 
-  // Baaki sab same...
   if (filterUserId) where.userId = filterUserId
 
   if (month && year) {
@@ -179,7 +171,6 @@ export const getAllAttendance = async (user, query) => {
   return { records, total, page: Number(page), limit: Number(limit) }
 }
 
-
 // ─── admin: single user monthly attendance ────────────────────
 
 export const getUserMonthlyAttendance = async (userId, query) => {
@@ -201,7 +192,6 @@ export const getUserMonthlyAttendance = async (userId, query) => {
     select: { id: true, name: true, email: true, role: true },
   })
 
-  // Summary counts
   const summary = records.reduce(
     (acc, r) => {
       if (r.status === 'PRESENT') acc.present++
@@ -217,8 +207,6 @@ export const getUserMonthlyAttendance = async (userId, query) => {
 }
 
 // ─── auto-absent job ──────────────────────────────────────────
-// Call this from a cron job at end of each day (e.g. 23:59)
-// It marks all active users who never checked in as ABSENT.
 
 export const runAutoAbsent = async () => {
   const today = toDateOnly()
@@ -250,4 +238,75 @@ export const runAutoAbsent = async () => {
   })
 
   return { marked: missing.length }
+}
+
+// ─── NEW: Super Admin — edit any attendance record ────────────
+// Allows changing checkInTime, checkOutTime, status, notes
+// totalHours auto-recalculated if both times are present
+
+export const editAttendance = async (attendanceId, payload) => {
+  const record = await prisma.attendance.findUnique({ where: { id: attendanceId } })
+  if (!record) throw { statusCode: 404, message: 'Attendance record not found.' }
+
+  const checkIn  = payload.checkInTime  ? new Date(payload.checkInTime)  : record.checkInTime
+  const checkOut = payload.checkOutTime ? new Date(payload.checkOutTime) : record.checkOutTime
+
+  // Auto-recalculate totalHours if both times exist
+  let totalHours = record.totalHours
+  if (checkIn && checkOut) {
+    totalHours = hoursBetween(checkIn, checkOut)
+  } else if (!checkIn || !checkOut) {
+    totalHours = null
+  }
+
+  // Status: use provided status OR derive from totalHours
+  const status = payload.status ?? deriveStatus(totalHours)
+
+  return prisma.attendance.update({
+    where: { id: attendanceId },
+    data: {
+      checkInTime:  payload.checkInTime  !== undefined ? (payload.checkInTime  ? new Date(payload.checkInTime)  : null) : undefined,
+      checkOutTime: payload.checkOutTime !== undefined ? (payload.checkOutTime ? new Date(payload.checkOutTime) : null) : undefined,
+      totalHours,
+      status,
+      notes: payload.notes !== undefined ? payload.notes : undefined,
+    },
+  })
+}
+
+// ─── NEW: User — mark leave for a specific date ───────────────
+// User sirf apni khud ki leave mark kar sakta hai
+// Status sirf 'LEAVE' set hoti hai, kuch aur nahi
+
+export const markLeave = async (userId, branchId, date, notes) => {
+  const targetDate = toDateOnly(new Date(date))
+  const today = toDateOnly()
+
+  // Past ya future dates allow karo, but aaj ke liye check karo agar already checked in
+  const existing = await prisma.attendance.findUnique({
+    where: { userId_date: { userId, date: targetDate } },
+  })
+
+  // Agar already check-in ho chuka hai toh leave nahi lagegi
+  if (existing?.checkInTime) {
+    throw { statusCode: 400, message: 'Cannot mark leave — you have already checked in on this date.' }
+  }
+
+  return prisma.attendance.upsert({
+    where: { userId_date: { userId, date: targetDate } },
+    update: {
+      status: 'LEAVE',
+      notes: notes ?? null,
+      checkInTime: null,
+      checkOutTime: null,
+      totalHours: null,
+    },
+    create: {
+      userId,
+      branchId,
+      date: targetDate,
+      status: 'LEAVE',
+      notes: notes ?? null,
+    },
+  })
 }

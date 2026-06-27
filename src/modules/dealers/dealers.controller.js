@@ -117,3 +117,29 @@ export const createSalesReturn = async (req, res) => {
   const stockIn = await dealersService.createDealerSalesReturn(req.params.id, req.body, req.user.id)
   sendSuccess(res, stockIn, 'Sales return recorded successfully.', 201)
 }
+export const getOverviewStats = async (req, res) => {
+  const branchId = req.user.role === 'SUPER_ADMIN'
+    ? req.query.branchId
+    : req.user.branchId
+
+  const stats = await dealersService.getDealersOverviewStats(branchId)
+  sendSuccess(res, stats)
+}
+
+// ─── HISTORICAL STOCK ─────────────────────────────────────────────────────────
+// Ye functions dealers.controller.js ke bottom mein paste karo
+
+export const addHistoricalStock = async (req, res) => {
+  const record = await dealersService.addDealerHistoricalStock(req.params.id, req.body)
+  sendSuccess(res, record, 'Historical stock added successfully.', 201)
+}
+
+export const getHistoricalStock = async (req, res) => {
+  const result = await dealersService.getDealerHistoricalStock(req.params.id, req.query)
+  sendSuccess(res, result)
+}
+
+export const deleteHistoricalStock = async (req, res) => {
+  await dealersService.deleteDealerHistoricalStock(req.params.id, req.params.recordId)
+  sendSuccess(res, null, 'Historical stock record deleted.')
+}

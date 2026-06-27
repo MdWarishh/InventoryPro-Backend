@@ -72,7 +72,7 @@ export const createProduct = async (data, user) => {
   const { 
     name, sku, description, categoryId, unit, purchasePrice, 
     sellingPrice, gstRate, hsnCode, minStockAlert, images, 
-    barcode, hasSerialNumbers, branchIds  // ✅ branchIds destructure karo
+    barcode, hasSerialNumbers, branchIds, brand
   } = data
 
  const finalSKU = sku || await generateSKU(data.categoryName || 'GEN')
@@ -91,6 +91,7 @@ export const createProduct = async (data, user) => {
       hsnCode, minStockAlert: Number(minStockAlert) || 10,
       images: images || [], barcode,
       hasSerialNumbers: hasSerialNumbers === true || hasSerialNumbers === 'true',
+       brand: brand || null,
     },
     include: { category: true },
   })
@@ -158,6 +159,7 @@ export const updateProduct = async (id, data) => {
       images: data.images,
       barcode: data.barcode,
       hasSerialNumbers: data.hasSerialNumbers,
+       brand: data.brand,
     },
     include: { category: true },
   })

@@ -30,14 +30,17 @@ export const getDashboardStats = async (user, branchId) => {
     totalProducts,
     recentStockIns,
     recentStockOuts,
+    allStockOuts,   // ✅ all-time revenue (price × qty ke liye)
+    allStockIns,    // ✅ all-time expense (price × qty ke liye)
+    monthStockIns,  // ✅ is mahine ka expense (month profit ke liye)
   ] = await Promise.all([
     prisma.productStock.aggregate({ where: filter, _sum: { currentStock: true } }),
     prisma.productStock.findMany({
       where: filter,
       include: { product: { select: { minStockAlert: true } } },
     }).then(stocks => stocks.filter(s => s.currentStock <= s.product.minStockAlert).length),
-    prisma.stockOut.aggregate({ where: { ...filter, date: { gte: startOfToday } }, _sum: { sellingPrice: true }, _count: true }),
-    prisma.stockOut.aggregate({ where: { ...filter, date: { gte: startOfMonth } }, _sum: { sellingPrice: true }, _count: true }),
+    prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfToday } }, select: { sellingPrice: true, quantity: true } }),
+    prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfMonth } }, select: { sellingPrice: true, quantity: true } }),
     prisma.product.count({ where: { isActive: true } }),
     prisma.stockIn.findMany({
       where: filter,
@@ -51,16 +54,35 @@ export const getDashboardStats = async (user, branchId) => {
       orderBy: { date: 'desc' },
       include: { product: { select: { name: true, sku: true } }, branch: { select: { name: true } } },
     }),
+    prisma.stockOut.findMany({ where: filter, select: { sellingPrice: true, quantity: true } }),
+    prisma.stockIn.findMany({ where: filter, select: { purchasePrice: true, quantity: true } }),
+    prisma.stockIn.findMany({ where: { ...filter, date: { gte: startOfMonth } }, select: { purchasePrice: true, quantity: true } }),
   ])
+
+  // ── Revenue / Expense / Profit — price × quantity (aggregate._sum sirf price sum karta, qty ignore karta) ──
+  const todaySalesAmount = todaySales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
+  const monthSalesAmount = monthSales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
+
+  const totalRevenue = allStockOuts.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
+  const totalExpense = allStockIns.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0)
+  const totalProfit  = totalRevenue - totalExpense
+
+  const monthExpense = monthStockIns.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0)
+  const monthProfit  = monthSalesAmount - monthExpense
 
   return {
     totalStock: totalStockValue._sum.currentStock || 0,
     lowStockCount,
-    todaySales: { amount: todaySales._sum.sellingPrice || 0, count: todaySales._count },
-    monthSales: { amount: monthSales._sum.sellingPrice || 0, count: monthSales._count },
+    todaySales: { amount: todaySalesAmount, count: todaySales.length },
+    monthSales: { amount: monthSalesAmount, count: monthSales.length },
     totalProducts,
     recentStockIns,
     recentStockOuts,
+    // ✅ Naye fields — All Time Profit card ke liye
+    totalRevenue,
+    totalExpense,
+    totalProfit,
+    monthProfit,
   }
 }
 

@@ -6,6 +6,9 @@ import { isAdminOrAbove } from '../../middlewares/role.middleware.js'
 const router = Router()
 router.use(authenticate)
 
+// ─── OVERVIEW STATS ── (':id' se PEHLE hona chahiye) ──
+router.get('/overview-stats', dealersController.getOverviewStats)
+
 // ─── DEALERS CRUD ─────────────────────────────────────────────────────────────
 router.get('/',    dealersController.getAll)
 router.get('/:id', dealersController.getById)
@@ -32,6 +35,14 @@ router.get('/:id/stock-out',  dealersController.getStockOutHistory)
 router.post('/:id/stock-out', isAdminOrAbove, dealersController.createStockOut)
 
 router.post('/:id/stock-return', isAdminOrAbove, dealersController.createSalesReturn)
+
+// ─── HISTORICAL STOCK ─────────────────────────────────────────────────────────
+// Ye lines dealers.routes.js mein existing routes ke saath paste karo
+// (stock-return route ke baad)
+
+router.get('/:id/historical-stock',              isAdminOrAbove, dealersController.getHistoricalStock)
+router.post('/:id/historical-stock',             isAdminOrAbove, dealersController.addHistoricalStock)
+router.delete('/:id/historical-stock/:recordId', isAdminOrAbove, dealersController.deleteHistoricalStock)
 
 // ─── OLD DEALER INVOICES (backward compat — DealerInvoice model) ──────────────
 router.get('/:id/invoices',            isAdminOrAbove, dealersController.getInvoices)
