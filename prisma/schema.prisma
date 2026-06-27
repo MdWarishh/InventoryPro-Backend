@@ -82,6 +82,7 @@ enum Module {
   STOCK_TRANSFER
   ATTENDANCE
   EXPENSES
+  TASKS
 }
 
 enum AttendanceStatus {
@@ -103,6 +104,26 @@ enum PaymentMethod {
   CARD
   OTHER
 }
+
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum TaskPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TaskType {
+  ASSIGNED   
+  PERSONAL    
+}
+
+
 
 model User {
   id                    String               @id @default(cuid())
@@ -127,6 +148,10 @@ model User {
   stockTransfersCreated StockTransfer[]      @relation("TransferCreatedBy")
   branch                Branch?              @relation(fields: [branchId], references: [id])
   expenses  Expense[]
+  tasksCreated   Task[]        @relation("TaskCreatedBy")
+  tasksAssigned  Task[]        @relation("TaskAssignedTo")
+  taskComments   TaskComment[]
+  taskActivities TaskActivity[]
   permissions Permission[]
 
   @@map("users")
@@ -655,4 +680,66 @@ model Expense {
   @@index([date])
   @@index([branchId, date])
   @@map("expenses")
+}
+
+
+
+
+model Task {
+  id           String       @id @default(cuid())
+  title        String
+  description  String?
+  status       TaskStatus   @default(TODO)
+  priority     TaskPriority @default(MEDIUM)
+  type         TaskType     @default(PERSONAL)
+  dueDate      DateTime?
+  
+   
+  createdBy    String
+  createdByUser User        @relation("TaskCreatedBy", fields: [createdBy], references: [id])
+
+   
+  assignedTo   String
+  assignedToUser User       @relation("TaskAssignedTo", fields: [assignedTo], references: [id])
+
+  branchId     String?
+
+  completedAt  DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  comments     TaskComment[]
+  activities   TaskActivity[]
+
+  @@index([assignedTo])
+  @@index([createdBy])
+  @@index([branchId])
+  @@index([status])
+  @@map("tasks")
+}
+
+model TaskComment {
+  id        String   @id @default(cuid())
+  taskId    String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("task_comments")
+}
+
+model TaskActivity {
+  id        String   @id @default(cuid())
+  taskId    String
+  userId    String
+  action    String   
+  createdAt DateTime @default(now())
+
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("task_activities")
 }

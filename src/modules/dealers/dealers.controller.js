@@ -59,7 +59,12 @@ export const getStockInHistory = async (req, res) => {
 // ─── SERIAL NUMBERS ───────────────────────────────────────────────────────────
 
 export const getDealerSerials = async (req, res) => {
-  const serials = await dealersService.getDealerSerials(req.params.id, req.query.productId, req.query.branchId)
+  const serials = await dealersService.getDealerSerials(
+    req.params.id,
+    req.query.productId,
+    req.query.branchId,
+    req.query.productName   // ✅ manual product ke liye
+  )
   sendSuccess(res, serials)
 }
 
@@ -80,6 +85,12 @@ export const getStockSummary = async (req, res) => {
 // ─── STOCK OUT ────────────────────────────────────────────────────────────────
 
 export const createStockOut = async (req, res) => {
+  // productId nahi hai = manual/free-text product → alag flow
+  if (!req.body.productId) {
+    const result = await dealersService.createDealerManualStockOut(req.params.id, req.body)
+    return sendSuccess(res, result, 'Dealer sale recorded successfully.', 201)
+  }
+
   const stockOut = await dealersService.createDealerStockOut(req.params.id, req.body)
   sendSuccess(res, stockOut, 'Dealer sale recorded successfully.', 201)
 }

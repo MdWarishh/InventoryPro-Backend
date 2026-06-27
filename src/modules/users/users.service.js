@@ -5,7 +5,7 @@ const ALL_MODULES = [
   'DASHBOARD', 'USERS', 'STOCK', 'MEETINGS', 'REPORTS',
   'BRANCHES', 'NOTIFICATIONS', 'PRODUCTS', 'CATEGORIES',
   'DEALERS', 'SETTINGS', 'SALES', 'STOCK_TRANSFER',
-  'EXPENSES', 'ATTENDANCE'    
+  'EXPENSES', 'ATTENDANCE', 'TASKS'  
 ]
 
 // Helper: normalize incoming permissions array
