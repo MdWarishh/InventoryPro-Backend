@@ -42,18 +42,23 @@ export const getDashboardStats = async (user, branchId) => {
     prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfToday } }, select: { sellingPrice: true, quantity: true } }),
     prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfMonth } }, select: { sellingPrice: true, quantity: true } }),
     prisma.product.count({ where: { isActive: true } }),
-    prisma.stockIn.findMany({
-      where: filter,
-      take: 5,
-      orderBy: { date: 'desc' },
-      include: { product: { select: { name: true, sku: true } }, branch: { select: { name: true } } },
-    }),
-    prisma.stockOut.findMany({
-      where: filter,
-      take: 5,
-      orderBy: { date: 'desc' },
-      include: { product: { select: { name: true, sku: true } }, branch: { select: { name: true } } },
-    }),
+   prisma.stockIn.findMany({
+  where: filter,
+  take: 5,
+  orderBy: { date: 'desc' },
+  include: { product: { select: { name: true, sku: true } }, branch: { select: { name: true } } },
+}),
+prisma.stockOut.findMany({
+  where: filter,
+  take: 5,
+  orderBy: { date: 'desc' },
+  // ✅ productName add kiya — manual products ke liye product null hota hai ab
+  include: {
+    product: { select: { name: true, sku: true } },
+    branch: { select: { name: true } },
+  },
+  select: undefined, // (include already use ho raha hai, productName auto include ho jayega kyunki yeh scalar field hai)
+}),
     prisma.stockOut.findMany({ where: filter, select: { sellingPrice: true, quantity: true } }),
     prisma.stockIn.findMany({ where: filter, select: { purchasePrice: true, quantity: true } }),
     prisma.stockIn.findMany({ where: { ...filter, date: { gte: startOfMonth } }, select: { purchasePrice: true, quantity: true } }),

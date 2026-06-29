@@ -389,7 +389,8 @@ model StockIn {
 
 model StockOut {
   id              String         @id @default(cuid())
-  productId       String
+  productId       String?
+  productName     String?
   branchId        String
   quantity        Int
   sellingPrice    Float
@@ -406,7 +407,7 @@ model StockOut {
   branch          Branch         @relation(fields: [branchId], references: [id])
   createdByUser   User           @relation(fields: [createdBy], references: [id])
   invoice         Invoice?       @relation(fields: [invoiceId], references: [id])
-  product         Product        @relation(fields: [productId], references: [id])
+  product         Product?       @relation(fields: [productId], references: [id])
 
   @@map("stock_outs")
 }
