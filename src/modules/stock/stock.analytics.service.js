@@ -82,6 +82,7 @@ export const getYearlyRevenue = async (user, { years = 3, branchId } = {}) => {
 }
 
 // ─── Breakdown: top products + top branches (treemap data) ───────────────────
+// ─── Breakdown: top products + top branches (treemap data) ───────────────────
 export const getBreakdown = async (user, { branchId, startDate, endDate } = {}) => {
   const where = {
     ...branchWhere(user, branchId),
@@ -102,6 +103,7 @@ export const getBreakdown = async (user, { branchId, startDate, endDate } = {}) 
       sellingPrice: true,
       branchId: true,
       productId: true,
+      productName: true,   // ✅ manual/free-text products ka naam yahan hota hai (productId null hone par)
       product: { select: { name: true } },
       branch: { select: { name: true } },
     },
@@ -114,9 +116,12 @@ export const getBreakdown = async (user, { branchId, startDate, endDate } = {}) 
   for (const r of records) {
     const rev = r.sellingPrice * r.quantity
 
-    // product
-    const pk = r.productId
-    const pp = productMap.get(pk) || { name: r.product?.name || pk, revenue: 0, transactions: 0 }
+    // ✅ manual/free-text item (productId null) ke liye productName se naam + unique key dono lo,
+    // taaki (a) "null" naam na dikhe, aur (b) alag-alag manual products
+    // apni-apni alag row mein group hon (pehle sab productId=null ki ek hi key mein mix ho jaate the)
+    const displayName = r.product?.name ?? r.productName ?? 'Unknown product'
+    const pk = r.productId ?? `manual:${displayName}`
+    const pp = productMap.get(pk) || { name: displayName, revenue: 0, transactions: 0 }
     productMap.set(pk, { ...pp, revenue: pp.revenue + rev, transactions: pp.transactions + 1 })
 
     // branch
