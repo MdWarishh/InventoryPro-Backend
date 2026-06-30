@@ -154,3 +154,8 @@ export const deleteHistoricalStock = async (req, res) => {
   await dealersService.deleteDealerHistoricalStock(req.params.id, req.params.recordId)
   sendSuccess(res, null, 'Historical stock record deleted.')
 }
+
+export const getAssignedProducts = async (req, res) => {
+  const result = await dealersService.getDealerAssignedProducts(req.params.id)
+  sendSuccess(res, result)
+}

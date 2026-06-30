@@ -25,6 +25,7 @@ router.get('/:id/serials', dealersController.getDealerSerials)
 // ─── UNBILLED STOCK (invoice generation ke liye) ──────────────────────────────
 // NEW: GET /dealers/:id/unbilled-stock
 router.get('/:id/unbilled-stock', isAdminOrAbove, dealersController.getUnbilledStock)
+router.get('/:id/assigned-products', dealersController.getAssignedProducts)
 
 // ─── STOCK IN ─────────────────────────────────────────────────────────────────
 router.get('/:id/stock-in',  isAdminOrAbove, dealersController.getStockInHistory)

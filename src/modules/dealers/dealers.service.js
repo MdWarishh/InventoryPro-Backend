@@ -1412,3 +1412,127 @@ export const createDealerManualStockOut = async (dealerId, data) => {
     include: { dealer: { select: { id: true, name: true } } },
   })
 }
+
+
+// ─── GET DEALER ASSIGNED PRODUCTS (ALL — billed + unbilled) ──────────────────
+// Invoice create/edit modal ke "Add Product" button ke liye — dealer ko kabhi
+// bhi assign hue saare products dikhane hain, sirf unbilled nahi.
+export const getDealerAssignedProducts = async (dealerId) => {
+  const dealer = await prisma.dealer.findUnique({ where: { id: dealerId } })
+  if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
+
+  // ── 1. Inventory-linked products — saare StockIn se distinct productId ──
+  const stockIns = await prisma.stockIn.findMany({
+    where: { dealerId },
+    select: { id: true, productId: true },
+  })
+  const stockInIds = stockIns.map(s => s.id)
+  const productIds = [...new Set(stockIns.map(s => s.productId))]
+
+  const products = productIds.length
+    ? await prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, name: true, sku: true, sellingPrice: true, gstRate: true, hasSerialNumbers: true },
+      })
+    : []
+  const productMap = Object.fromEntries(products.map(p => [p.id, p]))
+
+  // ── Saare real serials (TRANSFERRED ya SOLD, dono dikhao — status info ke saath) ──
+  const allRealSerials = stockInIds.length
+    ? await prisma.serialNumber.findMany({
+        where: { stockInId: { in: stockInIds } },
+        select: { id: true, serialNumber: true, status: true, dealerBillingStatus: true, productId: true },
+        orderBy: { serialNumber: 'asc' },
+      })
+    : []
+
+  // ── DEALER_HISTORICAL linked serials (productId set wale) ──
+  const historicalLinkedSerials = await prisma.serialNumber.findMany({
+    where: { historicalStock: { dealerId } },
+    select: { id: true, serialNumber: true, status: true, dealerBillingStatus: true, productId: true, historicalStockId: true },
+    orderBy: { serialNumber: 'asc' },
+  })
+
+  const inventoryMap = new Map()
+  for (const pid of productIds) {
+    const p = productMap[pid]
+    if (!p) continue
+    inventoryMap.set(pid, {
+      type: 'inventory',
+      productId: pid,
+      productName: p.name,
+      sku: p.sku,
+      sellingPrice: p.sellingPrice,
+      gstRate: p.gstRate,
+      hasSerialNumbers: p.hasSerialNumbers,
+      serials: [],
+    })
+  }
+  for (const s of allRealSerials) {
+    if (!inventoryMap.has(s.productId)) continue
+    inventoryMap.get(s.productId).serials.push({
+      id: s.id, serialNumber: s.serialNumber, type: 'transferred',
+      billed: s.status === 'SOLD' || s.dealerBillingStatus === 'BILLED',
+    })
+  }
+  for (const s of historicalLinkedSerials) {
+    const key = `hist_${s.productId}`
+    if (!inventoryMap.has(key)) {
+      const p = productMap[s.productId] || (await prisma.product.findUnique({
+        where: { id: s.productId },
+        select: { id: true, name: true, sku: true, sellingPrice: true, gstRate: true, hasSerialNumbers: true },
+      }))
+      if (!p) continue
+      inventoryMap.set(key, {
+        type: 'historical_linked', productId: p.id, productName: p.name, sku: p.sku,
+        sellingPrice: p.sellingPrice, gstRate: p.gstRate, hasSerialNumbers: true, serials: [],
+      })
+    }
+    inventoryMap.get(key).serials.push({
+      id: s.id, serialNumber: s.serialNumber, type: 'dealer_historical',
+      historicalStockId: s.historicalStockId,
+      billed: s.status === 'SOLD' || s.dealerBillingStatus === 'BILLED',
+    })
+  }
+
+  // ── 2. Manual/free-text products — saare history records, IN-OUT dono ──
+  const manualRecords = await prisma.dealerHistoricalStock.findMany({
+    where: { dealerId, productId: null },
+    select: { id: true, productName: true, type: true, quantity: true, salePrice: true, serialNumbers: true, usedSerialNumbers: true },
+  })
+
+  const manualMap = new Map()
+  for (const r of manualRecords) {
+    if (!manualMap.has(r.productName)) {
+      manualMap.set(r.productName, {
+        type: 'manual', productId: null, productName: r.productName, sku: null,
+        sellingPrice: r.salePrice || 0, gstRate: 0, hasSerialNumbers: false,
+        serials: [], totalIn: 0, totalOut: 0,
+      })
+    }
+    const entry = manualMap.get(r.productName)
+    if (r.type === 'IN') {
+      entry.totalIn += r.quantity
+      const usedSet = new Set(r.usedSerialNumbers || [])
+      for (const sn of r.serialNumbers || []) {
+        entry.serials.push({
+          id: `hist_${r.id}_${sn}`, serialNumber: sn, type: 'manual',
+          historicalStockId: r.id, billed: usedSet.has(sn),
+        })
+        entry.hasSerialNumbers = true
+      }
+    } else {
+      entry.totalOut += r.quantity
+    }
+  }
+
+  const inventoryProducts = Array.from(inventoryMap.values()).map(p => ({ ...p, quantity: p.serials.length }))
+  const manualProducts = Array.from(manualMap.values())
+    .filter(p => p.totalIn > 0) // kabhi assign hua ho
+    .map(p => {
+      const { totalIn, totalOut, ...rest } = p
+      return { ...rest, quantity: p.hasSerialNumbers ? p.serials.length : (totalIn - totalOut) }
+    })
+
+  return { dealer, products: [...inventoryProducts, ...manualProducts] }
+}

@@ -214,7 +214,7 @@ model Product {
   purchasePrice    Float               @default(0)
   sellingPrice     Float               @default(0)
   brand            String?
-  gstRate          Float               @default(18)
+  gstRate          Float               @default(0)
   hsnCode          String?
   minStockAlert    Int                 @default(10)
   images           String[]
@@ -391,6 +391,7 @@ model StockOut {
   id              String         @id @default(cuid())
   productId       String?
   productName     String?
+  gstRate         Float          @default(0) 
   branchId        String
   quantity        Int
   sellingPrice    Float
@@ -404,6 +405,7 @@ model StockOut {
   createdBy       String
   createdAt       DateTime       @default(now())
   serialNumbers   SerialNumber[]
+  manualSerialNumbers String[] @default([])
   branch          Branch         @relation(fields: [branchId], references: [id])
   createdByUser   User           @relation(fields: [createdBy], references: [id])
   invoice         Invoice?       @relation(fields: [invoiceId], references: [id])
@@ -564,7 +566,7 @@ model Settings {
   legalName           String?
   state               String?
   stateCode           String?
-  defaultGSTRate      Float    @default(18)
+  defaultGSTRate      Float    @default(0)
   invoicePrefix       String   @default("INV")
   invoiceFooter       String?
   invoiceTerms        String?
