@@ -195,42 +195,39 @@ export const deleteStockIn = async (id, user) => {
 
   checkBranchAccess(user, existing.branchId)
 
-  // Block delete if any serial number has been sold
-  if (existing.serialNumbers?.length) {
-    const soldSerials = existing.serialNumbers.filter(s => s.status === 'SOLD')
-    if (soldSerials.length > 0) {
-      throw {
-        statusCode: 400,
-        message: `Cannot delete: ${soldSerials.length} serial number(s) have already been sold. Delete the stock-out records first.`,
-      }
-    }
-  }
+  const availableSerials = existing.serialNumbers.filter(s => s.status === 'AVAILABLE')
+  // Sold/Transferred serials already left the stock ledger at sale time,
+  // so we only decrement currentStock for units that are still sitting unsold.
+  const decrementQty = existing.serialNumbers.length > 0
+    ? availableSerials.length
+    : existing.quantity
 
-  // Check current stock won't go negative
   const productStock = await prisma.productStock.findUnique({
     where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
   })
-  if (!productStock || productStock.currentStock < existing.quantity) {
+  if (productStock && productStock.currentStock < decrementQty) {
     throw {
       statusCode: 400,
-      message: `Cannot delete: current stock (${productStock?.currentStock || 0}) is less than this record's quantity (${existing.quantity}). Some stock may have been sold.`,
+      message: `Cannot delete: current stock (${productStock.currentStock}) is less than unsold quantity (${decrementQty}).`,
     }
   }
 
   await prisma.$transaction(async (tx) => {
-    // Delete AVAILABLE serial numbers linked to this stockIn
+    // Delete ALL serial numbers tied to this stockIn, regardless of status
     await tx.serialNumber.deleteMany({ where: { stockInId: id } })
 
-    // Reverse the stock count
-    await tx.productStock.update({
-      where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
-      data: { currentStock: { decrement: existing.quantity } },
-    })
+    // Reverse stock only for units that were still unsold
+    if (decrementQty > 0) {
+      await tx.productStock.update({
+        where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+        data: { currentStock: { decrement: decrementQty } },
+      })
+    }
 
     await tx.stockIn.delete({ where: { id } })
   })
 
-  return { message: 'Stock-in record deleted successfully.' }
+  return { message: 'Stock-in record and all its serial numbers deleted successfully.' }
 }
 
 // ─── STOCK OUT ────────────────────────────────────────────────────────────────
@@ -605,4 +602,63 @@ export const transferStock = async (data, user) => {
   })
 
   return transfer
+}
+
+// ─── STOCK IN: REMOVE ONLY UNSOLD SERIALS (PARTIAL DELETE) ───────────────────
+
+export const removeUnsoldFromStockIn = async (id, user) => {
+  const existing = await prisma.stockIn.findUnique({
+    where: { id },
+    include: { serialNumbers: true },
+  })
+  if (!existing) throw { statusCode: 404, message: 'Stock-in record not found.' }
+
+  checkBranchAccess(user, existing.branchId)
+
+  const soldSerials = existing.serialNumbers.filter(s => s.status === 'SOLD')
+  const availableSerials = existing.serialNumbers.filter(s => s.status === 'AVAILABLE')
+
+  if (availableSerials.length === 0) {
+    throw { statusCode: 400, message: 'No unsold serial numbers to remove.' }
+  }
+
+  // Check current stock has enough to reduce (safety)
+  const productStock = await prisma.productStock.findUnique({
+    where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+  })
+  if (!productStock || productStock.currentStock < availableSerials.length) {
+    throw {
+      statusCode: 400,
+      message: `Cannot remove: current stock (${productStock?.currentStock || 0}) is less than unsold quantity (${availableSerials.length}).`,
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Delete only the AVAILABLE serial numbers tied to this stockIn
+    await tx.serialNumber.deleteMany({
+      where: { stockInId: id, status: 'AVAILABLE' },
+    })
+
+    // Decrement stock by however many were removed
+    await tx.productStock.update({
+      where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
+      data: { currentStock: { decrement: availableSerials.length } },
+    })
+
+    // Shrink the stockIn record's quantity to match remaining (sold) count
+    await tx.stockIn.update({
+      where: { id },
+      data: { quantity: soldSerials.length },
+    })
+  })
+
+  return prisma.stockIn.findUnique({
+    where: { id },
+    include: {
+      product: { select: { id: true, name: true, sku: true, brand: true } },
+      branch: { select: { id: true, name: true } },
+      dealer: { select: { id: true, name: true } },
+      serialNumbers: true,
+    },
+  })
 }

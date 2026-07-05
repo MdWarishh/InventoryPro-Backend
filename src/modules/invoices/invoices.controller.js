@@ -30,3 +30,11 @@ export const remove = async (req, res) => {
   const result = await invoicesService.deleteInvoice(req.params.id, req.user)
   sendSuccess(res, result, 'Invoice deleted successfully.')
 }
+
+export const getNextNumber = async (req, res) => {
+  const branchId = req.user.role === 'SUPER_ADMIN' ? req.query.branchId : req.user.branchId
+  if (!branchId) return res.json({ data: null })
+  const { previewInvoiceNumber } = await import('../../utils/generateInvoiceNo.js')
+  const invoiceNumber = await previewInvoiceNumber(branchId)
+  res.json({ data: { invoiceNumber } })
+}

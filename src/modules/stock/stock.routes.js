@@ -10,6 +10,7 @@ router.use(authenticate)
 // ── Stock In ──────────────────────────────────────────────────────────────────
 router.post('/in', stockController.stockIn)
 router.put('/in/:id', stockController.updateStockIn)
+router.patch('/in/:id/remove-unsold', stockController.removeUnsoldFromStockInController)
 router.delete('/in/:id', isAdminOrAbove, stockController.deleteStockIn)
 
 // ── Stock Out ─────────────────────────────────────────────────────────────────

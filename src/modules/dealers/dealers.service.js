@@ -149,7 +149,116 @@ export const updateDealer = async (id, data) => {
 export const deleteDealer = async (id) => {
   const dealer = await prisma.dealer.findUnique({ where: { id } })
   if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
-  await prisma.dealer.update({ where: { id }, data: { isActive: false } })
+
+  await prisma.$transaction(async (tx) => {
+    // ── 1. STOCK IN records ──
+    const stockIns = await tx.stockIn.findMany({
+      where: { dealerId: id },
+      select: { id: true, productId: true, branchId: true, quantity: true, sourceNote: true },
+    })
+    const stockInIds = stockIns.map(s => s.id)
+
+    // Sab serials ek hi query mein delete (chahe kisi bhi status ke ho)
+    if (stockInIds.length) {
+      await tx.serialNumber.deleteMany({ where: { stockInId: { in: stockInIds } } })
+    }
+
+    // Product+branch wise net quantity change compute karo (single pass, no DB calls)
+    const stockDeltaMap = new Map() // key: productId::branchId → net change
+    for (const si of stockIns) {
+      const key = `${si.productId}::${si.branchId}`
+      const isSalesReturn = si.sourceNote?.toUpperCase().includes('SALES RETURN')
+      const delta = isSalesReturn ? -si.quantity : si.quantity // return tha to ghatao, supply tha to badhao
+      stockDeltaMap.set(key, (stockDeltaMap.get(key) || 0) + delta)
+    }
+
+    // Ab har unique product+branch ke liye ek hi update query
+    for (const [key, delta] of stockDeltaMap.entries()) {
+      const [productId, branchId] = key.split('::')
+      if (delta === 0) continue
+      const stockExists = await tx.productStock.findUnique({
+        where: { productId_branchId: { productId, branchId } },
+      })
+      if (delta > 0) {
+        await tx.productStock.upsert({
+          where: { productId_branchId: { productId, branchId } },
+          update: { currentStock: { increment: delta } },
+          create: { productId, branchId, currentStock: delta },
+        })
+      } else if (stockExists) {
+        await tx.productStock.update({
+          where: { productId_branchId: { productId, branchId } },
+          data: { currentStock: { decrement: -delta } },
+        })
+      }
+    }
+
+    await tx.stockIn.deleteMany({ where: { dealerId: id } })
+
+    // ── 2. DEALER STOCK OUT ──
+    await tx.dealerStockOut.deleteMany({ where: { dealerId: id } })
+
+    // ── 3. OLD DealerInvoice model ──
+    await tx.dealerInvoice.deleteMany({ where: { dealerId: id } })
+
+    // ── 4. MAIN Invoice model + StockOuts ──
+    const invoices = await tx.invoice.findMany({
+      where: { dealerId: id },
+      select: { id: true, stockOuts: { select: { id: true, productId: true, branchId: true, quantity: true } } },
+    })
+    const invoiceIds = invoices.map(i => i.id)
+    const allStockOuts = invoices.flatMap(i => i.stockOuts)
+    const stockOutIds = allStockOuts.map(so => so.id)
+
+    if (stockOutIds.length) {
+      // Serials wapas AVAILABLE — ek hi query
+      await tx.serialNumber.updateMany({
+        where: { stockOutId: { in: stockOutIds } },
+        data: { status: 'AVAILABLE', stockOutId: null },
+      })
+    }
+
+    // Product stock reverse — grouped
+    const soDeltaMap = new Map()
+    for (const so of allStockOuts) {
+      if (!so.productId) continue // manual/free-text item, skip
+      const key = `${so.productId}::${so.branchId}`
+      soDeltaMap.set(key, (soDeltaMap.get(key) || 0) + so.quantity)
+    }
+    for (const [key, qty] of soDeltaMap.entries()) {
+      const [productId, branchId] = key.split('::')
+      const stockExists = await tx.productStock.findUnique({
+        where: { productId_branchId: { productId, branchId } },
+      })
+      if (stockExists) {
+        await tx.productStock.update({
+          where: { productId_branchId: { productId, branchId } },
+          data: { currentStock: { increment: qty } },
+        })
+      }
+    }
+
+    if (invoiceIds.length) {
+      await tx.stockOut.deleteMany({ where: { invoiceId: { in: invoiceIds } } })
+      await tx.invoice.deleteMany({ where: { id: { in: invoiceIds } } })
+    }
+
+    // ── 5. Historical stock + serials ──
+    const histRecords = await tx.dealerHistoricalStock.findMany({
+      where: { dealerId: id },
+      select: { id: true },
+    })
+    const histIds = histRecords.map(h => h.id)
+    if (histIds.length) {
+      await tx.serialNumber.deleteMany({ where: { historicalStockId: { in: histIds } } })
+    }
+    await tx.dealerHistoricalStock.deleteMany({ where: { dealerId: id } })
+
+    // ── 6. Dealer khud ──
+    await tx.dealer.delete({ where: { id } })
+  }, { timeout: 60000, maxWait: 10000 })
+
+  return { message: 'Dealer and all associated records deleted permanently.' }
 }
 
 // ─── DEALER STOCK IN ─────────────────────────────────────────────────────────
@@ -1065,10 +1174,17 @@ export const createDealerSalesReturn = async (dealerId, data, createdBy) => {
 // Total Wholesale Revenue, Total Sale, Products in Hand, Low Stock Items, All Profit
 
 export const getDealersOverviewStats = async (branchId) => {
-  const stockInWhere = { dealerId: { not: null }, ...(branchId && { branchId }) }
-  const stockOutWhere = { ...(branchId && { branchId }) }
+  const stockInWhere = {
+    dealerId: { not: null },
+    dealer: { isActive: true },   // ✅ sirf active dealer ka data
+    ...(branchId && { branchId }),
+  }
+  const stockOutWhere = {
+    dealer: { isActive: true },   // ✅ sirf active dealer ka data
+    ...(branchId && { branchId }),
+  }
 
-  const [allStockIns, allStockOuts] = await Promise.all([
+  const [allStockIns, allStockOuts, allInvoiceStockOuts] = await Promise.all([
     prisma.stockIn.findMany({
       where: stockInWhere,
       select: { dealerId: true, productId: true, quantity: true, purchasePrice: true, sourceNote: true },
@@ -1077,10 +1193,24 @@ export const getDealersOverviewStats = async (branchId) => {
       where: stockOutWhere,
       select: { dealerId: true, productId: true, quantity: true, salePrice: true },
     }),
+    prisma.stockOut.findMany({
+      where: {
+        invoice: {
+          dealerId: { not: null },
+          dealer: { isActive: true },   // ✅ sirf active dealer ka invoice
+          ...(branchId && { branchId }),
+        },
+      },
+      select: {
+        quantity: true,
+        sellingPrice: true,
+        productId: true,
+        invoice: { select: { dealerId: true } },
+      },
+    }),
   ])
 
-  // ── Wholesale Revenue (humne dealers ko diya — cost value) ──
-  // Sales return wale StockIn exclude karo (woh wapas aaya stock hai, naya supply nahi)
+  // ── baaki poora function bilkul same rahega ──
   const realStockIns = allStockIns.filter(
     si => !si.sourceNote?.toUpperCase().includes('SALES RETURN')
   )
@@ -1088,16 +1218,17 @@ export const getDealersOverviewStats = async (branchId) => {
     (sum, si) => sum + si.purchasePrice * si.quantity, 0
   )
 
-  // ── Total Sale (dealers ne aage becha) ──
-  const totalSale = allStockOuts.reduce(
+  const totalSaleFromDealerStockOut = allStockOuts.reduce(
     (sum, so) => sum + so.salePrice * so.quantity, 0
   )
+  const totalSaleFromInvoices = allInvoiceStockOuts.reduce(
+    (sum, so) => sum + so.sellingPrice * so.quantity, 0
+  )
+  const totalSale = totalSaleFromDealerStockOut + totalSaleFromInvoices
 
-  // ── All Profit = Total Sale − Total Wholesale Revenue ──
   const allProfit = totalSale - totalWholesaleRevenue
 
-  // ── Products in Hand + Low Stock (per dealer+product balance) ──
-  const balanceMap = new Map() // key: dealerId::productId
+  const balanceMap = new Map()
 
   for (const si of allStockIns) {
     const key = `${si.dealerId}::${si.productId}`
@@ -1116,9 +1247,16 @@ export const getDealersOverviewStats = async (branchId) => {
     balanceMap.get(key).sold += so.quantity
   }
 
+  for (const so of allInvoiceStockOuts) {
+    if (!so.productId) continue
+    const key = `${so.invoice.dealerId}::${so.productId}`
+    if (!balanceMap.has(key)) balanceMap.set(key, { given: 0, sold: 0, returned: 0 })
+    balanceMap.get(key).sold += so.quantity
+  }
+
   let productsInHand = 0
   let lowStockItems = 0
-  const LOW_STOCK_THRESHOLD = 2 // ✅ tum chaho to badal sakte ho
+  const LOW_STOCK_THRESHOLD = 2
 
   for (const entry of balanceMap.values()) {
     const balance = entry.given - entry.sold - entry.returned

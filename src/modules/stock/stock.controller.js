@@ -50,3 +50,12 @@ export const transferStock = async (req, res) => {
   const transfer = await stockService.transferStock(req.body, req.user)
   sendSuccess(res, transfer, 'Stock transferred successfully.', 201)
 }
+
+export const removeUnsoldFromStockInController = async (req, res, next) => {
+  try {
+    const result = await stockService.removeUnsoldFromStockIn(req.params.id, req.user)
+    res.json({ success: true, message: 'Unsold serial numbers removed successfully.', data: result })
+  } catch (err) {
+    next(err)
+  }
+}

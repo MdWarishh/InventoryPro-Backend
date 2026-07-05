@@ -8,6 +8,7 @@ export const createInvoice = async (data, user) => {
     paymentMode = 'Cash',
     dealerId = null,
     isDealerInvoice = false,
+    invoiceNumber: customInvoiceNumber,
   } = data
 
   if (user.role !== 'SUPER_ADMIN' && user.branchId !== branchId) {
@@ -25,7 +26,18 @@ export const createInvoice = async (data, user) => {
     throw { statusCode: 400, message: `Payment mode "${paymentMode}" is not configured for this branch.` }
   }
 
-  const invoiceNumber = await generateInvoiceNumber(branchId)
+   // Counter hamesha increment hoga (race-safe), taaki agli baar sahi next-number preview mile
+// Counter hamesha ek hi baar increment hoga (race-safe), taaki agli baar sahi next-number preview mile
+const generatedNumber = await generateInvoiceNumber(branchId)
+
+let invoiceNumber = generatedNumber
+if (customInvoiceNumber?.trim() && customInvoiceNumber.trim() !== generatedNumber) {
+  const dup = await prisma.invoice.findFirst({
+    where: { invoiceNumber: customInvoiceNumber.trim(), branchId },
+  })
+  if (dup) throw { statusCode: 400, message: `Invoice number "${customInvoiceNumber}" already exists.` }
+  invoiceNumber = customInvoiceNumber.trim()
+}
 
   let subtotal = 0
   let gstAmount = 0
@@ -309,40 +321,59 @@ async function processInvoiceItems(tx, ctx) {
 
     } else {
       // ── NORMAL INVOICE PATH ─────────────────────────────────────────────
-      const stockOutData = {
-        productId: item.productId,
+      if (!item.productId) {
+    await tx.stockOut.create({
+      data: {
+        productId: null,
+        productName: item.productName,
         branchId,
         quantity: Number(item.quantity),
         sellingPrice: Number(item.sellingPrice),
-        gstRate: item.gstRate,   
+        gstRate: item.gstRate,
         customerName, customerPhone, customerEmail, customerAddress,
         invoiceId: inv.id,
         notes,
         date: date ? new Date(date) : new Date(),
         createdBy: user.id,
-      }
+      },
+    })
+    continue
+  }
 
-      const currentStock = await tx.productStock.findUnique({
-        where: { productId_branchId: { productId: item.productId, branchId } },
-      })
-      if (!currentStock || currentStock.currentStock < item.quantity) {
-        throw { statusCode: 400, message: `Insufficient stock for: ${item.product?.name}` }
-      }
+  const stockOutData = {
+    productId: item.productId,
+    branchId,
+    quantity: Number(item.quantity),
+    sellingPrice: Number(item.sellingPrice),
+    gstRate: item.gstRate,
+    customerName, customerPhone, customerEmail, customerAddress,
+    invoiceId: inv.id,
+    notes,
+    date: date ? new Date(date) : new Date(),
+    createdBy: user.id,
+  }
 
-      const stockOut = await tx.stockOut.create({ data: stockOutData })
+  const currentStock = await tx.productStock.findUnique({
+    where: { productId_branchId: { productId: item.productId, branchId } },
+  })
+  if (!currentStock || currentStock.currentStock < item.quantity) {
+    throw { statusCode: 400, message: `Insufficient stock for: ${item.product?.name}` }
+  }
 
-      if (item.serialNumberIds?.length) {
-        await tx.serialNumber.updateMany({
-          where: { id: { in: item.serialNumberIds } },
-          data: { status: 'SOLD', stockOutId: stockOut.id },
-        })
-      }
+  const stockOut = await tx.stockOut.create({ data: stockOutData })
 
-      await tx.productStock.update({
-        where: { productId_branchId: { productId: item.productId, branchId } },
-        data: { currentStock: { decrement: Number(item.quantity) } },
-      })
-    }
+  if (item.serialNumberIds?.length) {
+    await tx.serialNumber.updateMany({
+      where: { id: { in: item.serialNumberIds } },
+      data: { status: 'SOLD', stockOutId: stockOut.id },
+    })
+  }
+
+  await tx.productStock.update({
+    where: { productId_branchId: { productId: item.productId, branchId } },
+    data: { currentStock: { decrement: Number(item.quantity) } },
+  })
+}
   }
 }
 
@@ -514,7 +545,7 @@ export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, sta
 // createInvoice uses, so edit behaves identically to create.
 // ────────────────────────────────────────────────────────────────────────────
 export const updateInvoice = async (id, data, user) => {
-  const existing = await prisma.invoice.findUnique({
+    const existing = await prisma.invoice.findUnique({
     where: { id },
     include: {
       stockOuts: { include: { serialNumbers: true } },
@@ -529,11 +560,11 @@ export const updateInvoice = async (id, data, user) => {
     customerName, customerPhone, customerEmail,
     customerAddress, customerGST, items, discount = 0,
     notes, terms, date, paymentMode = 'Cash',
+    invoiceNumber: newInvoiceNumber,
   } = data
 
   const branchId = existing.branchId
- // dealerId ab request se aa sake to use karo, warna purana wala rakho
-const dealerId = data.dealerId !== undefined ? (data.dealerId || null) : (existing.dealerId || null)
+  const dealerId = data.dealerId !== undefined ? (data.dealerId || null) : (existing.dealerId || null)
 
   if (dealerId) {
     const dealer = await prisma.dealer.findUnique({ where: { id: dealerId } })
@@ -544,6 +575,16 @@ const dealerId = data.dealerId !== undefined ? (data.dealerId || null) : (existi
   const customModes = branchSettings?.customPaymentModes ?? []
   if (customModes.length > 0 && !customModes.includes(paymentMode)) {
     throw { statusCode: 400, message: `Payment mode "${paymentMode}" is not configured for this branch.` }
+  }
+
+  // ✅ Invoice number change ho raha hai to duplicate check karo — ab sab declared hai
+  let invoiceNumberToSave = existing.invoiceNumber
+  if (newInvoiceNumber?.trim() && newInvoiceNumber.trim() !== existing.invoiceNumber) {
+    const dup = await prisma.invoice.findFirst({
+      where: { invoiceNumber: newInvoiceNumber.trim(), branchId, NOT: { id } },
+    })
+    if (dup) throw { statusCode: 400, message: `Invoice number "${newInvoiceNumber}" already exists.` }
+    invoiceNumberToSave = newInvoiceNumber.trim()
   }
 
   if (!items || !items.length) {
@@ -590,6 +631,7 @@ const dealerId = data.dealerId !== undefined ? (data.dealerId || null) : (existi
     await tx.invoice.update({
       where: { id },
       data: {
+        invoiceNumber: invoiceNumberToSave,
         customerName, customerPhone, customerEmail,
         customerAddress,
         customerGST: customerGST || null,

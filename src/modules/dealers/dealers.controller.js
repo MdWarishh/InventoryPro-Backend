@@ -40,10 +40,9 @@ export const update = async (req, res) => {
 }
 
 export const remove = async (req, res) => {
-  await dealersService.deleteDealer(req.params.id)
-  sendSuccess(res, null, 'Dealer deactivated successfully.')
+  const result = await dealersService.deleteDealer(req.params.id)
+  sendSuccess(res, null, result.message)
 }
-
 // ─── STOCK IN ─────────────────────────────────────────────────────────────────
 
 export const createStockIn = async (req, res) => {
