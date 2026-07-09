@@ -23,7 +23,14 @@ export const authenticate = async (req, res, next) => {
 
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
-      include: { branch: true }
+      include: {
+        branch: true,
+        // ← NEW: load module-level permissions so route/service level
+        // hasPermission() checks (see role.middleware.js) can use them
+        permissions: {
+          select: { module: true, canView: true, canCreate: true, canEdit: true, canDelete: true }
+        }
+      }
     })
 
     if (!user || !user.isActive) {

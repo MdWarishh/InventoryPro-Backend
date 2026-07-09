@@ -158,3 +158,12 @@ export const getAssignedProducts = async (req, res) => {
   const result = await dealersService.getDealerAssignedProducts(req.params.id)
   sendSuccess(res, result)
 }
+export const updateStockIn = async (req, res) => {
+  const result = await dealersService.updateDealerStockIn(req.params.id, req.params.stockInId, req.body, req.user)
+  sendSuccess(res, result, 'Stock-in record updated successfully.')
+}
+
+export const deleteStockIn = async (req, res) => {
+  const result = await dealersService.deleteDealerStockIn(req.params.id, req.params.stockInId)
+  sendSuccess(res, result, result.message)
+}

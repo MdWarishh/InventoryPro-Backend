@@ -31,6 +31,9 @@ router.get('/:id/assigned-products', dealersController.getAssignedProducts)
 router.get('/:id/stock-in',  isAdminOrAbove, dealersController.getStockInHistory)
 router.post('/:id/stock-in', isAdminOrAbove, dealersController.createStockIn)
 
+router.put('/:id/stock-in/:stockInId',    isAdminOrAbove, dealersController.updateStockIn)
+router.delete('/:id/stock-in/:stockInId', isAdminOrAbove, dealersController.deleteStockIn)
+
 // ─── STOCK OUT ────────────────────────────────────────────────────────────────
 router.get('/:id/stock-out',  dealersController.getStockOutHistory)
 router.post('/:id/stock-out', isAdminOrAbove, dealersController.createStockOut)

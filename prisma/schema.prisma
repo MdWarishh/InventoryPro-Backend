@@ -148,6 +148,8 @@ model User {
   stockTransfersCreated StockTransfer[]      @relation("TransferCreatedBy")
   branch                Branch?              @relation(fields: [branchId], references: [id])
   expenses  Expense[]
+   shiftId      String?
+   shift        Shift?   @relation(fields: [shiftId], references: [id])
   tasksCreated   Task[]        @relation("TaskCreatedBy")
   tasksAssigned  Task[]        @relation("TaskAssignedTo")
   taskComments   TaskComment[]
@@ -180,6 +182,7 @@ model Branch {
   stockIns        StockIn[]
   stockOuts       StockOut[]
   dealers         Dealer[] 
+  shifts       Shift[]
   dealerStockOuts DealerStockOut[]
   transfersFrom   StockTransfer[]  @relation("TransferFrom")
   transfersTo     StockTransfer[]  @relation("TransferTo")
@@ -636,17 +639,23 @@ model Attendance {
   id           String           @id @default(cuid())
   userId       String
   branchId     String
-  date         DateTime         // store as date only (no time) — use start of day UTC
+  shiftId      String?         
+  date         DateTime       
   checkInTime  DateTime?
   checkOutTime DateTime?
   totalHours   Float?
   status       AttendanceStatus @default(ABSENT)
+  isLate       Boolean          @default(false)
   notes        String?
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
-  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, date])    // one record per user per day
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shift        Shift?           @relation(fields: [shiftId], references: [id])
+
+  @@unique([userId, date])           // one record per user per day
+  @@index([branchId, date])          // fast admin "all attendance for this month/branch" queries
+  @@index([userId, date])            // fast user history queries (in addition to unique constraint)
   @@map("attendances")
 }
 
@@ -745,4 +754,23 @@ model TaskActivity {
   user      User     @relation(fields: [userId], references: [id])
 
   @@map("task_activities")
+}
+
+model Shift {
+  id                  String       @id @default(cuid())
+  branchId            String
+  name                String            
+  minimumWorkingHours Float              
+  checkInTime         String             
+  checkOutTime        String?            
+  gracePeriodMinutes  Int          @default(15)  
+  isActive            Boolean      @default(true)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  branch              Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  users               User[]
+  attendances         Attendance[]
+
+  @@map("shifts")
 }

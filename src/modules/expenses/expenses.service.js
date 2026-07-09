@@ -1,15 +1,5 @@
-// ─── expenses.service.js ─────────────────────────────────────────────────────
-// Backend mein Module enum mein EXPENSES add karna zaroori hai:
-//
-//   enum Module {
-//     ...existing...
-//     EXPENSES   // ← add this
-//   }
-//
-// Phir `npx prisma migrate dev --name add_expenses_module` run karo.
-
 import prisma from '../../config/db.js'
-import { startOfMonth, endOfMonth, startOfDay, endOfDay } from 'date-fns'
+import { startOfMonth, endOfMonth, startOfDay, endOfDay, startOfYear, endOfYear } from 'date-fns'
 
 const parseDateRange = (startDate, endDate) => ({
   gte: startDate ? new Date(startDate) : undefined,
@@ -19,6 +9,47 @@ const parseDateRange = (startDate, endDate) => ({
 const currentMonthRange = () => {
   const now = new Date()
   return { gte: startOfMonth(now), lte: endOfMonth(now) }
+}
+
+// ─── Flexible date filter, shared by getExpenses() and getExpenseStats() ───
+// Priority (highest first):
+//   1. startDate / endDate  → any explicit custom range (history filters,
+//      "last month", month-to-month range picked in the UI, etc.)
+//   2. month + year         → a single selected month
+//   3. year only            → the whole year
+//   4. nothing supplied     → current month (so as soon as the 1st of a new
+//      month arrives, "current" stats/list naturally reset to that month's
+//      — empty — data instead of showing last month's numbers)
+const resolveDateFilter = ({ startDate, endDate, month, year }) => {
+  if (startDate || endDate) return parseDateRange(startDate, endDate)
+
+  if (month && year) {
+    const d = new Date(Number(year), Number(month) - 1, 1)
+    return { gte: startOfMonth(d), lte: endOfMonth(d) }
+  }
+
+  if (year) {
+    const d = new Date(Number(year), 0, 1)
+    return { gte: startOfYear(d), lte: endOfYear(d) }
+  }
+
+  return currentMonthRange()
+}
+
+// Can this user modify (edit/delete) this particular expense?
+// - SUPER_ADMIN / BRANCH_ADMIN: always
+// - The person who created it: always
+// - Anyone else (STAFF): only if their Permission row for EXPENSES has
+//   canEdit / canDelete set to true
+const canModifyExpense = (user, expense, action) => {
+  if (user.role === 'SUPER_ADMIN' || user.role === 'BRANCH_ADMIN') return true
+  if (expense.createdBy === user.id) return true
+
+  const perms = user.permissions || []
+  const perm = perms.find((p) => p.module === 'EXPENSES')
+  if (action === 'edit') return Boolean(perm?.canEdit)
+  if (action === 'delete') return Boolean(perm?.canDelete)
+  return false
 }
 
 export const createExpense = async (data, user) => {
@@ -32,6 +63,7 @@ export const createExpense = async (data, user) => {
       category: data.category || null,
       paymentMethod: data.paymentMethod || 'CASH',
       notes: data.notes || null,
+      // Date not sent from the frontend? Default to "today" (the day it's actually added)
       date: data.date ? new Date(data.date) : new Date(),
       branchId: user.branchId || null,
       createdBy: user.id,
@@ -43,20 +75,20 @@ export const getExpenses = async (query, user) => {
   const {
     startDate,
     endDate,
+    month,
+    year,
     category,
     paymentMethod,
     page = 1,
     limit = 50,
-    branchId,          // ← NEW: SUPER_ADMIN selected branch
+    branchId, // SUPER_ADMIN selected branch
   } = query
 
   const where = {
-    // SUPER_ADMIN: agar branchId query mein hai to filter karo, warna all branches
-    // Other roles: apni branch ka hi data
     branchId: user.role === 'SUPER_ADMIN'
       ? (branchId || undefined)
       : (user.branchId || undefined),
-    date: startDate || endDate ? parseDateRange(startDate, endDate) : currentMonthRange(),
+    date: resolveDateFilter({ startDate, endDate, month, year }),
     ...(category && { category }),
     ...(paymentMethod && { paymentMethod }),
   }
@@ -75,10 +107,22 @@ export const getExpenses = async (query, user) => {
   return { expenses, total, page: Number(page), limit: Number(limit) }
 }
 
+export const getExpenseById = async (id, user) => {
+  const expense = await prisma.expense.findUnique({
+    where: { id },
+    include: { createdByUser: { select: { id: true, name: true } } },
+  })
+  if (!expense) throw { statusCode: 404, message: 'Expense not found.' }
+  if (user.role !== 'SUPER_ADMIN' && user.branchId && expense.branchId !== user.branchId) {
+    throw { statusCode: 403, message: 'Access denied.' }
+  }
+  return expense
+}
+
 export const updateExpense = async (id, data, user) => {
   const expense = await prisma.expense.findUnique({ where: { id } })
   if (!expense) throw { statusCode: 404, message: 'Expense not found.' }
-  if (user.role !== 'SUPER_ADMIN' && expense.createdBy !== user.id)
+  if (!canModifyExpense(user, expense, 'edit'))
     throw { statusCode: 403, message: 'Access denied.' }
   if (data.amount !== undefined && (isNaN(data.amount) || Number(data.amount) <= 0))
     throw { statusCode: 400, message: 'Amount must be a positive number.' }
@@ -99,7 +143,7 @@ export const updateExpense = async (id, data, user) => {
 export const deleteExpense = async (id, user) => {
   const expense = await prisma.expense.findUnique({ where: { id } })
   if (!expense) throw { statusCode: 404, message: 'Expense not found.' }
-  if (user.role !== 'SUPER_ADMIN' && expense.createdBy !== user.id)
+  if (!canModifyExpense(user, expense, 'delete'))
     throw { statusCode: 403, message: 'Access denied.' }
   await prisma.expense.delete({ where: { id } })
 }
@@ -110,22 +154,12 @@ export const getExpenseStats = async (query, user) => {
     year,
     startDate,
     endDate,
-    branchId,          // ← NEW: SUPER_ADMIN selected branch
+    branchId, // SUPER_ADMIN selected branch
   } = query
 
-  let dateFilter
-  if (startDate || endDate) {
-    dateFilter = parseDateRange(startDate, endDate)
-  } else if (month && year) {
-    const d = new Date(Number(year), Number(month) - 1, 1)
-    dateFilter = { gte: startOfMonth(d), lte: endOfMonth(d) }
-  } else {
-    dateFilter = currentMonthRange()
-  }
+  const dateFilter = resolveDateFilter({ startDate, endDate, month, year })
 
   const where = {
-    // SUPER_ADMIN: agar branchId query mein hai to filter karo, warna all branches
-    // Other roles: apni branch ka hi data
     branchId: user.role === 'SUPER_ADMIN'
       ? (branchId || undefined)
       : (user.branchId || undefined),

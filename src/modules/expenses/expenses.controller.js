@@ -11,6 +11,11 @@ export const getAll = async (req, res) => {
   sendSuccess(res, data)
 }
 
+export const getOne = async (req, res) => {
+  const expense = await expensesService.getExpenseById(req.params.id, req.user)
+  sendSuccess(res, expense)
+}
+
 export const update = async (req, res) => {
   const expense = await expensesService.updateExpense(req.params.id, req.body, req.user)
   sendSuccess(res, expense, 'Expense updated successfully.')
