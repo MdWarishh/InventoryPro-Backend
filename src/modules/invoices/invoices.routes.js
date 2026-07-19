@@ -12,5 +12,6 @@ router.post('/reset-counter', isAdminOrAbove, invoicesController.resetCounter)
 router.get('/next-number', invoicesController.getNextNumber)
 router.get('/:id',    invoicesController.getById)
 router.put('/:id',    isAdminOrAbove, invoicesController.update)
+router.patch('/bulk-label', isAdminOrAbove, invoicesController.bulkAssignLabel)
 router.delete('/:id', isAdminOrAbove, invoicesController.remove)
 export default router

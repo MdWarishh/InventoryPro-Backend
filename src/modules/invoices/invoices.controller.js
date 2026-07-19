@@ -38,3 +38,9 @@ export const getNextNumber = async (req, res) => {
   const invoiceNumber = await previewInvoiceNumber(branchId)
   res.json({ data: { invoiceNumber } })
 }
+
+export const bulkAssignLabel = async (req, res) => {
+  const { invoiceIds, labelId } = req.body
+  const result = await invoicesService.bulkAssignLabel(invoiceIds, labelId || null, req.user)
+  sendSuccess(res, result, result.message)
+}

@@ -13,7 +13,7 @@ const uploadLogo      = multer({ storage: memStorage }).single('logo')
 const uploadQR        = multer({ storage: memStorage }).single('qrCode')
 const uploadSignature = multer({ storage: memStorage }).single('signature')
 
-router.get('/', isAdminOrAbove, settingsController.get)
+router.get('/', settingsController.get)
 router.get('/all', isSuperAdmin, settingsController.getAll)
 router.put('/', isAdminOrAbove, settingsController.update)
 router.post('/logo',      isAdminOrAbove, uploadLogo,      settingsController.uploadLogo)

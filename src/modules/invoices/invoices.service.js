@@ -7,6 +7,7 @@ export const createInvoice = async (data, user) => {
     customerAddress, customerGST, items, discount = 0, notes, terms, date,
     paymentMode = 'Cash',
     dealerId = null,
+    labelId = null, 
     isDealerInvoice = false,
     invoiceNumber: customInvoiceNumber,
   } = data
@@ -19,6 +20,14 @@ export const createInvoice = async (data, user) => {
     const dealer = await prisma.dealer.findUnique({ where: { id: dealerId } })
     if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
   }
+
+  if (labelId) {
+  const label = await prisma.label.findUnique({ where: { id: labelId } })
+  if (!label) throw { statusCode: 404, message: 'Label not found.' }
+  if (label.branchId && label.branchId !== branchId) {
+    throw { statusCode: 400, message: 'Label does not belong to this branch.' }
+  }
+}
 
   const branchSettings = await prisma.settings.findUnique({ where: { branchId } })
   const customModes = branchSettings?.customPaymentModes ?? []
@@ -89,6 +98,7 @@ processedItems.push({ ...item, product, gstRate: effectiveGstRate })
         date: date ? new Date(date) : new Date(),
         createdBy: user.id,
         ...(dealerId && { dealerId }),
+         ...(labelId && { labelId }), 
       },
     }) 
 
@@ -485,6 +495,7 @@ export const getInvoiceById = async (id, user) => {
       dealerSerials: {
         select: { id: true, serialNumber: true, productId: true, historicalStockId: true },
       },
+      label: { select: { id: true, name: true, color: true } },
     },
   })
   if (!invoice) throw { statusCode: 404, message: 'Invoice not found.' }
@@ -500,7 +511,7 @@ export const getInvoiceById = async (id, user) => {
   return { ...invoice, branch }
 }
 
-export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, startDate, endDate, search, dealerId } = {}) => {
+export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, startDate, endDate, search, dealerId, labelId } = {}) => {
   const skip = (page - 1) * limit
   const where = {}
 
@@ -508,6 +519,7 @@ export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, sta
   else if (branchId) where.branchId = branchId
 
   if (dealerId) where.dealerId = dealerId
+  if (labelId) where.labelId = labelId 
 
   if (search) where.OR = [
     { invoiceNumber: { contains: search, mode: 'insensitive' } },
@@ -526,6 +538,7 @@ export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, sta
       include: {
         stockOuts: { select: { id: true, quantity: true, productName: true, product: { select: { name: true } } } },
         dealer: { select: { id: true, name: true } },
+        label: { select: { id: true, name: true, color: true } }, 
       },
       orderBy: { date: 'desc' },
     }),
@@ -535,15 +548,7 @@ export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, sta
   return { invoices, pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / limit) } }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// updateInvoice — now mirrors createInvoice fully:
-//  - manual/free-text products (name, price, GST all editable)
-//  - dealer invoices (transferred serials + dealer-historical serials/qty)
-//  - normal branch stock + serials
-// Flow: reverse old item effects → recompute totals from new items →
-// update invoice row → re-apply new items via the same shared logic
-// createInvoice uses, so edit behaves identically to create.
-// ────────────────────────────────────────────────────────────────────────────
+
 export const updateInvoice = async (id, data, user) => {
     const existing = await prisma.invoice.findUnique({
     where: { id },
@@ -565,6 +570,16 @@ export const updateInvoice = async (id, data, user) => {
 
   const branchId = existing.branchId
   const dealerId = data.dealerId !== undefined ? (data.dealerId || null) : (existing.dealerId || null)
+  const labelId  = data.labelId !== undefined ? (data.labelId || null) : (existing.labelId || null)   
+
+  if (labelId) {
+  const label = await prisma.label.findUnique({ where: { id: labelId } })
+  if (!label) throw { statusCode: 404, message: 'Label not found.' }
+  if (label.branchId && label.branchId !== branchId) {
+    throw { statusCode: 400, message: 'Label does not belong to this branch.' }
+  }
+}
+
 
   if (dealerId) {
     const dealer = await prisma.dealer.findUnique({ where: { id: dealerId } })
@@ -686,4 +701,41 @@ export const resetCounter = async (branchId, user) => {
     throw { statusCode: 403, message: 'Access denied.' }
   }
   return resetInvoiceCounter(branchId)
+}
+
+export const bulkAssignLabel = async (invoiceIds, labelId, user) => {
+  if (!Array.isArray(invoiceIds) || invoiceIds.length === 0) {
+    throw { statusCode: 400, message: 'No invoices selected.' }
+  }
+
+  const invoices = await prisma.invoice.findMany({
+    where: { id: { in: invoiceIds } },
+    select: { id: true, branchId: true },
+  })
+  if (invoices.length !== invoiceIds.length) {
+    throw { statusCode: 404, message: 'Some invoices not found.' }
+  }
+  if (user.role !== 'SUPER_ADMIN') {
+    const unauthorized = invoices.some(inv => inv.branchId !== user.branchId)
+    if (unauthorized) throw { statusCode: 403, message: 'Access denied to some invoices.' }
+  }
+
+  if (labelId) {
+    const label = await prisma.label.findUnique({ where: { id: labelId } })
+    if (!label) throw { statusCode: 404, message: 'Label not found.' }
+    if (label.branchId) {
+      const mismatched = invoices.some(inv => inv.branchId !== label.branchId)
+      if (mismatched) throw { statusCode: 400, message: 'Label does not belong to one or more invoice branches.' }
+    }
+  }
+
+  await prisma.invoice.updateMany({
+    where: { id: { in: invoiceIds } },
+    data: { labelId: labelId || null },
+  })
+
+  return {
+    message: labelId ? 'Label assigned successfully.' : 'Label removed successfully.',
+    count: invoiceIds.length,
+  }
 }

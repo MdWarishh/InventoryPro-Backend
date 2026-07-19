@@ -175,6 +175,7 @@ model Branch {
   attendanceSettings  AttendanceSettings?
   categories      Category[]
   invoiceCounters InvoiceCounter[]
+  labels          Label[]
   meetings        Meeting[]
   productStocks   ProductStock[]
   serialNumbers   SerialNumber[]
@@ -440,6 +441,8 @@ model Invoice {
   dealerId        String?
   dealer          Dealer?    @relation(fields: [dealerId], references: [id])
   dealerSerials   SerialNumber[] @relation("DealerSerialInvoice")
+  labelId       String?
+  label         Label?     @relation(fields: [labelId], references: [id])
 
   @@unique([invoiceNumber, branchId])
   @@map("invoices")
@@ -773,4 +776,20 @@ model Shift {
   attendances         Attendance[]
 
   @@map("shifts")
+}
+
+model Label {
+  id        String    @id @default(cuid())
+  name      String
+  color     String    @default("#6366f1")
+  branchId  String?              // null = global label (sab branches me dikhega)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  branch    Branch?   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  invoices  Invoice[]
+
+  @@unique([name, branchId])
+  @@map("labels")
 }
