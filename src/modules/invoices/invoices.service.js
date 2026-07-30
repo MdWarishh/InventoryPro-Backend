@@ -314,6 +314,8 @@ async function processInvoiceItems(tx, ctx) {
         data: {
           productId: item.productId || null,
           productName: item.productId ? null : item.productName,
+          description: item.description || null,       
+          mrp: item.mrp !== undefined && item.mrp !== null ? Number(item.mrp) : null, 
           branchId,
           quantity: Number(item.quantity),
           sellingPrice: Number(item.sellingPrice),
@@ -336,6 +338,8 @@ async function processInvoiceItems(tx, ctx) {
       data: {
         productId: null,
         productName: item.productName,
+          description: item.description || null,       
+        mrp: item.mrp !== undefined && item.mrp !== null ? Number(item.mrp) : null,
         branchId,
         quantity: Number(item.quantity),
         sellingPrice: Number(item.sellingPrice),
@@ -352,6 +356,8 @@ async function processInvoiceItems(tx, ctx) {
 
   const stockOutData = {
     productId: item.productId,
+      description: item.description || null,       
+    mrp: item.mrp !== undefined && item.mrp !== null ? Number(item.mrp) : null,
     branchId,
     quantity: Number(item.quantity),
     sellingPrice: Number(item.sellingPrice),
@@ -536,7 +542,8 @@ export const getAllInvoices = async (user, { page = 1, limit = 20, branchId, sta
     prisma.invoice.findMany({
       where, skip, take: Number(limit),
       include: {
-        stockOuts: { select: { id: true, quantity: true, productName: true, product: { select: { name: true } } } },
+        stockOuts: { select: { id: true, quantity: true, productName: true,  description: true, mrp: true,       
+            sellingPrice: true,  product: { select: { name: true } } } },
         dealer: { select: { id: true, name: true } },
         label: { select: { id: true, name: true, color: true } }, 
       },

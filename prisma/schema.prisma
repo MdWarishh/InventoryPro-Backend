@@ -217,6 +217,7 @@ model Product {
   unit             String              @default("pcs")
   purchasePrice    Float               @default(0)
   sellingPrice     Float               @default(0)
+    mrp              Float               @default(0)
   brand            String?
   gstRate          Float               @default(0)
   hsnCode          String?
@@ -395,6 +396,8 @@ model StockOut {
   id              String         @id @default(cuid())
   productId       String?
   productName     String?
+  description     String?    
+  mrp             Float?    
   gstRate         Float          @default(0) 
   branchId        String
   quantity        Int
