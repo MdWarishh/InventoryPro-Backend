@@ -300,7 +300,7 @@ export const deleteDealer = async (id) => {
 // Dealer ko stock dena = StockIn create + ProductStock deduct + serials TRANSFERRED
 
 export const createDealerStockIn = async (dealerId, data, createdBy) => {
-  const { productId, branchId, quantity, costPrice, serialNumberIds, referenceNo, date } = data
+  const { productId, branchId, quantity, costPrice, serialNumberIds, referenceNo, date, notes } = data
 
   const dealer = await prisma.dealer.findUnique({ where: { id: dealerId } })
   if (!dealer) throw { statusCode: 404, message: 'Dealer not found.' }
