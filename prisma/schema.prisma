@@ -123,7 +123,11 @@ enum TaskType {
   PERSONAL    
 }
 
-
+enum StockInOrigin {
+  PURCHASE        
+  DEALER_SUPPLY    
+  SALES_RETURN   
+}
 
 model User {
   id                    String               @id @default(cuid())
@@ -184,7 +188,6 @@ model Branch {
   stockOuts       StockOut[]
   dealers         Dealer[] 
   shifts       Shift[]
-  dealerStockOuts DealerStockOut[]
   transfersFrom   StockTransfer[]  @relation("TransferFrom")
   transfersTo     StockTransfer[]  @relation("TransferTo")
   users           User[]
@@ -233,7 +236,6 @@ model Product {
   serialNumbers    SerialNumber[]
   stockIns         StockIn[]
   stockOuts        StockOut[]
-  dealerStockOuts  DealerStockOut[]
   transferItems    StockTransferItem[]
   dealerHistoricalStocks DealerHistoricalStock[]
 
@@ -261,14 +263,12 @@ model SerialNumber {
   status       SerialStatus @default(AVAILABLE)
   stockInId    String?
   stockOutId   String?
-  dealerStockOutId String? 
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
   branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
   product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
   stockIn      StockIn?     @relation(fields: [stockInId], references: [id])
   stockOut     StockOut?    @relation(fields: [stockOutId], references: [id])
-  dealerStockOut  DealerStockOut? @relation(fields: [dealerStockOutId], references: [id])
   dealerBillingStatus  DealerBillingStatus?  
   dealerInvoiceId      String? 
   dealerInvoice  Invoice?  @relation("DealerSerialInvoice", fields: [dealerInvoiceId], references: [id])        
@@ -297,7 +297,6 @@ model Dealer {
   notes       String?
   branchId    String?
   branch      Branch?  @relation(fields: [branchId], references: [id])
-  stockOuts   DealerStockOut[]
   invoices        DealerInvoice[]
   mainInvoices    Invoice[]
   createdAt   DateTime         @default(now())
@@ -306,26 +305,6 @@ model Dealer {
   historicalStocks DealerHistoricalStock[]
 
   @@map("dealers")
-}
-
-model DealerStockOut {
-  id        String   @id @default(cuid())
-  dealerId  String
-  productId String
-  branchId  String
-  quantity  Int
-  salePrice Float
-  date      DateTime @default(now())
-  notes     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  serialNumbers SerialNumber[]
-
-  dealer  Dealer  @relation(fields: [dealerId], references: [id])
-  product Product @relation(fields: [productId], references: [id])
-  branch  Branch  @relation(fields: [branchId], references: [id])
-
-  @@map("dealer_stock_outs")
 }
 
 model DealerInvoice {
@@ -344,23 +323,27 @@ model DealerInvoice {
 }
 
 model DealerHistoricalStock {
-  id            String   @id @default(cuid())
-  dealerId      String
-  productId     String?              // null if free-text product
-  productName   String               // always store name (free-text ya product ka)
-  serialNumbers String[]             // manually typed serial numbers array
-  type          DealerHistoricalType // IN or OUT
-  quantity      Int
-  purchasePrice Float    @default(0)
-  salePrice     Float    @default(0)
-  date          DateTime @default(now())
-  notes         String?
-  createdAt     DateTime @default(now())
+  id                  String   @id @default(cuid())
+  dealerId            String
+  productId           String?
+  productName         String
+  serialNumbers       String[]
+  type                DealerHistoricalType
+  quantity            Int
+  usedQuantity  Int  @default(0)  
+  purchasePrice       Float    @default(0)   
+  mrp                 Float    @default(0)
+  dealerPurchasePrice Float    @default(0)  
+  salePrice           Float    @default(0)  
+  lowStockThreshold   Int      @default(10)  
+  date                DateTime @default(now())
+  notes               String?
+  createdAt           DateTime @default(now())
 
-  dealer        Dealer   @relation(fields: [dealerId], references: [id])
-  product       Product? @relation(fields: [productId], references: [id])
-  usedSerialNumbers  String[]  @default([])  
-  serialNumberRecords SerialNumber[]  
+  dealer              Dealer   @relation(fields: [dealerId], references: [id])
+  product             Product? @relation(fields: [productId], references: [id])
+  usedSerialNumbers   String[] @default([])
+  serialNumberRecords SerialNumber[]
 
   @@index([dealerId])
   @@map("dealer_historical_stocks")
@@ -372,22 +355,26 @@ enum DealerHistoricalType {
 }
 
 model StockIn {
-  id            String         @id @default(cuid())
-  productId     String
-  branchId      String
-  quantity      Int
-  purchasePrice Float
-  dealerId      String?
-  sourceNote    String?
-  referenceNo   String?
-  date          DateTime       @default(now())
-  createdBy     String
-  createdAt     DateTime       @default(now())
-  serialNumbers SerialNumber[]
-  branch        Branch         @relation(fields: [branchId], references: [id])
-  createdByUser User           @relation(fields: [createdBy], references: [id])
-  dealer        Dealer?        @relation(fields: [dealerId], references: [id])
-  product       Product        @relation(fields: [productId], references: [id])
+  id                  String         @id @default(cuid())
+  productId           String
+  branchId            String
+  quantity            Int
+  purchasePrice       Float          // company purchase price (already tha)
+  dealerPurchasePrice Float          @default(0)   // ✅ NEW — jo dealer se lenge
+  mrp                 Float          @default(0)   // ✅ NEW — stock value ke liye
+  lowStockThreshold   Int            @default(10) 
+   origin StockInOrigin @default(PURCHASE) 
+  dealerId            String?
+  sourceNote          String?
+  referenceNo         String?
+  date                DateTime       @default(now())
+  createdBy           String
+  createdAt           DateTime       @default(now())
+  serialNumbers       SerialNumber[]
+  branch              Branch         @relation(fields: [branchId], references: [id])
+  createdByUser       User           @relation(fields: [createdBy], references: [id])
+  dealer              Dealer?        @relation(fields: [dealerId], references: [id])
+  product              Product        @relation(fields: [productId], references: [id])
 
   @@map("stock_ins")
 }
@@ -413,6 +400,8 @@ model StockOut {
   createdAt       DateTime       @default(now())
   serialNumbers   SerialNumber[]
   manualSerialNumbers String[] @default([])
+  historicalConsumption Json?   
+  manualConsumption Json?
   branch          Branch         @relation(fields: [branchId], references: [id])
   createdByUser   User           @relation(fields: [createdBy], references: [id])
   invoice         Invoice?       @relation(fields: [invoiceId], references: [id])

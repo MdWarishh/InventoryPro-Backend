@@ -2,7 +2,6 @@ import prisma from '../../config/db.js'
 import { generateExcelReport } from '../../utils/excelParser.js'
 
 const getBranchFilter = (user, branchId) => {
-  // Sanitize: agar branchId object aa gaya (e.g. { branchId: "..." }) toh unwrap karo
   const resolvedBranchId = typeof branchId === 'object' && branchId !== null
     ? branchId.branchId
     : branchId
@@ -14,6 +13,12 @@ const getBranchFilter = (user, branchId) => {
     : user.branchId
 
   return userBranchId ? { branchId: userBranchId } : {}
+}
+
+// ✅ NEW — DealerHistoricalStock ke liye branch filter (branchId directly nahi hai, dealer.branchId se)
+const getDealerHistFilter = (user, branchId) => {
+  const bf = getBranchFilter(user, branchId)
+  return bf.branchId ? { dealer: { branchId: bf.branchId } } : {}
 }
 
 export const getDashboardStats = async (user, branchId) => {
@@ -30,9 +35,11 @@ export const getDashboardStats = async (user, branchId) => {
     totalProducts,
     recentStockIns,
     recentStockOuts,
-    allStockOuts,   // ✅ all-time revenue (price × qty ke liye)
-    allStockIns,    // ✅ all-time expense (price × qty ke liye)
-    monthStockIns,  // ✅ is mahine ka expense (month profit ke liye)
+    allStockOuts,
+    totalExpenseAgg,      // ✅ NEW — Expense model se
+    monthExpenseAgg,      // ✅ NEW — Expense model se
+    productStocksForMrp,  // ✅ NEW — MRP-based stock value ke liye
+    mrpStockIns,          // ✅ NEW — MRP-based stock value ke liye
   ] = await Promise.all([
     prisma.productStock.aggregate({ where: filter, _sum: { currentStock: true } }),
     prisma.productStock.findMany({
@@ -42,38 +49,67 @@ export const getDashboardStats = async (user, branchId) => {
     prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfToday } }, select: { sellingPrice: true, quantity: true } }),
     prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfMonth } }, select: { sellingPrice: true, quantity: true } }),
     prisma.product.count({ where: { isActive: true } }),
-   prisma.stockIn.findMany({
-  where: filter,
-  take: 5,
-  orderBy: { date: 'desc' },
-  include: { product: { select: { name: true, sku: true } }, branch: { select: { name: true } } },
-}),
-prisma.stockOut.findMany({
-  where: filter,
-  take: 5,
-  orderBy: { date: 'desc' },
-  // ✅ productName add kiya — manual products ke liye product null hota hai ab
-  include: {
-    product: { select: { name: true, sku: true } },
-    branch: { select: { name: true } },
-  },
-  select: undefined, // (include already use ho raha hai, productName auto include ho jayega kyunki yeh scalar field hai)
-}),
+    prisma.stockIn.findMany({
+      where: filter,
+      take: 5,
+      orderBy: { date: 'desc' },
+      include: { product: { select: { name: true, sku: true } }, branch: { select: { name: true } } },
+    }),
+    prisma.stockOut.findMany({
+      where: filter,
+      take: 5,
+      orderBy: { date: 'desc' },
+      include: {
+        product: { select: { name: true, sku: true } },
+        branch: { select: { name: true } },
+      },
+    }),
     prisma.stockOut.findMany({ where: filter, select: { sellingPrice: true, quantity: true } }),
-    prisma.stockIn.findMany({ where: filter, select: { purchasePrice: true, quantity: true } }),
-    prisma.stockIn.findMany({ where: { ...filter, date: { gte: startOfMonth } }, select: { purchasePrice: true, quantity: true } }),
+    // ✅ NEW — total Expense (all-time), branch-filtered
+    prisma.expense.aggregate({
+      where: filter.branchId ? { branchId: filter.branchId } : {},
+      _sum: { amount: true },
+    }),
+    // ✅ NEW — total Expense (this month), branch-filtered
+    prisma.expense.aggregate({
+      where: {
+        ...(filter.branchId ? { branchId: filter.branchId } : {}),
+        date: { gte: startOfMonth },
+      },
+      _sum: { amount: true },
+    }),
+    // ✅ NEW — current stock per product-branch, MRP value ke liye
+    prisma.productStock.findMany({ where: filter, select: { productId: true, branchId: true, currentStock: true } }),
+    // ✅ NEW — latest StockIn (origin: PURCHASE) ka mrp, per product-branch
+    prisma.stockIn.findMany({
+      where: { ...filter, origin: 'PURCHASE' },
+      select: { productId: true, branchId: true, mrp: true, date: true },
+      orderBy: { date: 'desc' },
+    }),
   ])
 
-  // ── Revenue / Expense / Profit — price × quantity (aggregate._sum sirf price sum karta, qty ignore karta) ──
   const todaySalesAmount = todaySales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
   const monthSalesAmount = monthSales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
 
   const totalRevenue = allStockOuts.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
-  const totalExpense = allStockIns.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0)
-  const totalProfit  = totalRevenue - totalExpense
 
-  const monthExpense = monthStockIns.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0)
+  // ✅ NEW PROFIT FORMULA — saari invoice sales price − Expense model ka total
+  const totalExpense = totalExpenseAgg._sum.amount || 0
+  const monthExpense  = monthExpenseAgg._sum.amount || 0
+  const totalProfit = totalRevenue - totalExpense
   const monthProfit  = monthSalesAmount - monthExpense
+
+  // ✅ NEW — Total Stock Value, regular branch StockIn (origin: PURCHASE) ke latest mrp se
+  const mrpMap = new Map()
+  for (const si of mrpStockIns) {
+    const key = `${si.productId}::${si.branchId}`
+    if (!mrpMap.has(key)) mrpMap.set(key, si.mrp || 0)  // date desc sorted hai, pehla hi latest
+  }
+  const totalStockValueMrp = productStocksForMrp.reduce((sum, ps) => {
+    const key = `${ps.productId}::${ps.branchId}`
+    const mrp = mrpMap.get(key) || 0
+    return sum + mrp * ps.currentStock
+  }, 0)
 
   return {
     totalStock: totalStockValue._sum.currentStock || 0,
@@ -83,11 +119,12 @@ prisma.stockOut.findMany({
     totalProducts,
     recentStockIns,
     recentStockOuts,
-    // ✅ Naye fields — All Time Profit card ke liye
     totalRevenue,
     totalExpense,
     totalProfit,
+    monthExpense,
     monthProfit,
+    totalStockValueMrp,   // ✅ NEW — dashboard "Total Stock Value" card ke liye
   }
 }
 
@@ -130,42 +167,77 @@ export const getSalesReport = async (user, { branchId, startDate, endDate, group
 }
 
 export const getPurchaseReport = async (user, { branchId, startDate, endDate } = {}) => {
-  const filter = getBranchFilter(user, branchId)
+  const filter = getBranchFilter(user, { ...(branchId && { branchId }), origin: 'PURCHASE' }) // ✅ FIX — origin filter
+  filter.origin = 'PURCHASE' // ✅ explicit (getBranchFilter na uda de isliye direct bhi set kar diya)
+  const histFilter = getDealerHistFilter(user, branchId)
+
   if (startDate || endDate) {
     filter.date = {}
     if (startDate) filter.date.gte = new Date(startDate)
     if (endDate) filter.date.lte = new Date(endDate)
   }
 
-  const purchases = await prisma.stockIn.findMany({
-    where: filter,
-    include: {
-      product: { select: { id: true, name: true, sku: true } },
-      branch: { select: { id: true, name: true } },
-      dealer: { select: { id: true, name: true } },
-    },
-    orderBy: { date: 'desc' },
-  })
+  const histDateFilter = { ...histFilter, type: 'IN' }
+  if (startDate || endDate) {
+    histDateFilter.date = {}
+    if (startDate) histDateFilter.date.gte = new Date(startDate)
+    if (endDate) histDateFilter.date.lte = new Date(endDate)
+  }
 
-  const totalPurchase = purchases.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0)
-  return { summary: { totalPurchase, totalTransactions: purchases.length }, items: purchases }
+  const [purchases, historicalIn] = await Promise.all([
+    prisma.stockIn.findMany({
+      where: filter,
+      include: {
+        product: { select: { id: true, name: true, sku: true } },
+        branch: { select: { id: true, name: true } },
+        dealer: { select: { id: true, name: true } },
+      },
+      orderBy: { date: 'desc' },
+    }),
+    // ✅ NEW — backdated/manual dealer purchase entries bhi purchase report mein
+    prisma.dealerHistoricalStock.findMany({
+      where: histDateFilter,
+      include: {
+        product: { select: { id: true, name: true, sku: true } },
+        dealer: { select: { id: true, name: true, branch: { select: { id: true, name: true } } } },
+      },
+      orderBy: { date: 'desc' },
+    }),
+  ])
+
+  // ✅ Historical ko StockIn jaisi shape mein normalize karo taaki downloadReport/UI same rahe
+  const normalizedHistorical = historicalIn.map(h => ({
+    id: h.id,
+    isHistorical: true,
+    quantity: h.serialNumbers?.length || h.quantity,
+    purchasePrice: h.purchasePrice,
+    referenceNo: null,
+    date: h.date,
+    product: h.product || { id: null, name: h.productName, sku: '—' },
+    branch: h.dealer?.branch || { id: null, name: 'Dealer (Historical)' },
+    dealer: h.dealer,
+  }))
+
+  const combined = [...purchases, ...normalizedHistorical].sort((a, b) => new Date(b.date) - new Date(a.date))
+
+  const totalPurchase = combined.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0)
+  return { summary: { totalPurchase, totalTransactions: combined.length }, items: combined }
 }
 
 export const getStockValuationReport = async (user, branchId) => {
+  // ✅ Unaffected — ye purely ProductStock (branch physical stock) pe based hai, dealer se koi lena-dena nahi
   const filter = getBranchFilter(user, branchId)
 
   const stocks = await prisma.productStock.findMany({
     where: { ...filter, currentStock: { gt: 0 } },
     include: {
-      product: {
-    include: { category: { select: { name: true } } },
-  },
+      product: { include: { category: { select: { name: true } } } },
       branch: { select: { name: true } },
     },
   })
 
   const items = stocks
-   .filter(s => s.product && s.product.isActive) 
+    .filter(s => s.product && s.product.isActive)
     .map(s => ({
       productName: s.product.name,
       sku: s.product.sku,
@@ -198,34 +270,30 @@ export const getAllBranchesReport = async (user, { startDate, endDate } = {}) =>
 
   const branchReports = await Promise.all(
     branches.map(async (branch) => {
-      const [salesData, purchaseData, stockData] = await Promise.all([
-        prisma.stockOut.aggregate({
-          where: { branchId: branch.id, ...dateFilter },
-          _sum: { sellingPrice: true },
-          _count: true,
+      // ✅ FIX — aggregate hataya, findMany + reduce (quantity × price sahi calculate karne ke liye)
+      const [salesRows, purchaseRows, historicalIn, stockData] = await Promise.all([
+        prisma.stockOut.findMany({ where: { branchId: branch.id, ...dateFilter }, select: { sellingPrice: true, quantity: true } }),
+        prisma.stockIn.findMany({ where: { branchId: branch.id, origin: 'PURCHASE', ...dateFilter }, select: { purchasePrice: true, quantity: true } }), // ✅ origin filter
+        prisma.dealerHistoricalStock.findMany({
+          where: { type: 'IN', dealer: { branchId: branch.id }, ...dateFilter },
+          select: { purchasePrice: true, quantity: true, serialNumbers: true },
         }),
-        prisma.stockIn.aggregate({
-          where: { branchId: branch.id, ...dateFilter },
-          _sum: { purchasePrice: true },
-          _count: true,
-        }),
-        prisma.productStock.aggregate({
-          where: { branchId: branch.id },
-          _sum: { currentStock: true },
-        }),
+        prisma.productStock.aggregate({ where: { branchId: branch.id }, _sum: { currentStock: true } }),
       ])
 
-      const revenue = salesData._sum.sellingPrice || 0
-      const purchase = purchaseData._sum.purchasePrice || 0
+      const revenue = salesRows.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
+      const purchase =
+        purchaseRows.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0) +
+        historicalIn.reduce((sum, h) => sum + (h.purchasePrice || 0) * (h.serialNumbers?.length || h.quantity), 0)
 
       return {
         branchId: branch.id,
         branchName: branch.name,
         isMainBranch: branch.isMainBranch,
         totalSales: revenue,
-        totalSalesCount: salesData._count,
+        totalSalesCount: salesRows.length,
         totalPurchase: purchase,
-        totalPurchaseCount: purchaseData._count,
+        totalPurchaseCount: purchaseRows.length + historicalIn.length,
         currentStock: stockData._sum.currentStock || 0,
         grossProfit: revenue - purchase,
       }
@@ -242,12 +310,16 @@ export const getAllBranchesReport = async (user, { startDate, endDate } = {}) =>
   return { branches: branchReports, totals }
 }
 
+// ✅ GST report — origin: PURCHASE filter add kiya (dealer-supply/return GST claim mein nahi aana chahiye,
+//    kyunki wo real supplier se GST-invoiced purchase nahi hai — internal stock movement hai)
 export const getGSTReport = async (user, { branchId, month, year, type = 'summary' } = {}) => {
   const filter = getBranchFilter(user, branchId)
 
   const startDate = new Date(year, month - 1, 1)
   const endDate = new Date(year, month, 0, 23, 59, 59)
   filter.date = { gte: startDate, lte: endDate }
+
+  const purchaseFilter = { ...filter, origin: 'PURCHASE' } // ✅ FIX
 
   if (type === 'gstr1') {
     const sales = await prisma.stockOut.findMany({
@@ -280,7 +352,7 @@ export const getGSTReport = async (user, { branchId, month, year, type = 'summar
 
   if (type === 'gstr2') {
     const purchases = await prisma.stockIn.findMany({
-      where: filter,
+      where: purchaseFilter, // ✅ FIX
       include: {
         product: { select: { name: true, sku: true, gstRate: true, hsnCode: true } },
         branch: { select: { name: true } },
@@ -306,14 +378,8 @@ export const getGSTReport = async (user, { branchId, month, year, type = 'summar
   }
 
   const [salesData, purchaseData] = await Promise.all([
-    prisma.stockOut.findMany({
-      where: filter,
-      include: { product: { select: { gstRate: true } } },
-    }),
-    prisma.stockIn.findMany({
-      where: filter,
-      include: { product: { select: { gstRate: true } } },
-    }),
+    prisma.stockOut.findMany({ where: filter, include: { product: { select: { gstRate: true } } } }),
+    prisma.stockIn.findMany({ where: purchaseFilter, include: { product: { select: { gstRate: true } } } }), // ✅ FIX
   ])
 
   const salesByRate = {}
@@ -340,18 +406,19 @@ export const getGSTReport = async (user, { branchId, month, year, type = 'summar
 }
 
 export const getLowStockReport = async (user, branchId) => {
+  // ✅ Unaffected — branch physical stock (ProductStock) based hai, sahi hai as-is
   const filter = getBranchFilter(user, branchId)
   const stocks = await prisma.productStock.findMany({
     where: filter,
     include: {
-  product: { include: { category: { select: { name: true } } } },
-  branch: { select: { name: true } },
-},
+      product: { include: { category: { select: { name: true } } } },
+      branch: { select: { name: true } },
+    },
   })
 
   return stocks
     .filter(s => s.product && s.product.isActive && s.currentStock <= s.product.minStockAlert)
- .map(s => ({
+    .map(s => ({
       productId: s.product.id,
       productName: s.product.name,
       sku: s.product.sku,
@@ -387,16 +454,17 @@ export const downloadReport = async (user, reportType, filters) => {
     const result = await getPurchaseReport(user, filters)
     data = result.items.map(p => ({
       Date: p.date.toLocaleDateString(),
-      Product: p.product.name,
-      SKU: p.product.sku,
-      Branch: p.branch.name,
+      Product: p.product?.name || '-',
+      SKU: p.product?.sku || '-',
+      Branch: p.branch?.name || '-',
       Quantity: p.quantity,
       'Purchase Price': p.purchasePrice,
       'Total Amount': p.purchasePrice * p.quantity,
       Dealer: p.dealer?.name || '',
       'Reference No': p.referenceNo || '',
+      Source: p.isHistorical ? 'Historical (Manual)' : 'Regular', // ✅ NEW — batane ke liye ye row kaha se aayi
     }))
-    headers = ['Date', 'Product', 'SKU', 'Branch', 'Quantity', 'Purchase Price', 'Total Amount', 'Dealer', 'Reference No']
+    headers = ['Date', 'Product', 'SKU', 'Branch', 'Quantity', 'Purchase Price', 'Total Amount', 'Dealer', 'Reference No', 'Source']
   } else if (reportType === 'stock-valuation') {
     const result = await getStockValuationReport(user, filters.branchId)
     data = result.items

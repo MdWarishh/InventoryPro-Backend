@@ -236,15 +236,14 @@ async function processInvoiceItems(tx, ctx) {
           if (!grouped[s.historicalStockId]) grouped[s.historicalStockId] = []
           grouped[s.historicalStockId].push(s.serialNumber)
         }
-        for (const [histId, sns] of Object.entries(grouped)) {
-          await tx.dealerHistoricalStock.update({
-            where: { id: histId },
-            data: {
-              quantity: { decrement: sns.length },
-              usedSerialNumbers: { push: sns },
-            },
-          })
-        }
+       for (const [histId, sns] of Object.entries(grouped)) {
+  await tx.dealerHistoricalStock.update({
+    where: { id: histId },
+    data: {
+      usedSerialNumbers: { push: sns },
+    },
+  })
+}
       }
 
       // ── 3. Manual free-text serials (hist_ prefix) ──────────────────────
@@ -271,43 +270,78 @@ async function processInvoiceItems(tx, ctx) {
           }
 
           await tx.dealerHistoricalStock.update({
-            where: { id: histId },
-            data: {
-              quantity: { decrement: sns.length },
-              usedSerialNumbers: { push: sns },
-            },
+    where: { id: histId },
+    data: {
+      usedSerialNumbers: { push: sns },
+    },
           })
         }
       }
+
+      // ── 3B. Real product WITHOUT serials — dealer balance check ─────────────
+     // ── 3B. Real product WITHOUT serials — dealer balance check ─────────────
+if (item.productId && !item.product?.hasSerialNumbers && allSerialIds.length === 0) {
+  const [givenAgg, returnedAgg, invoicedAgg] = await Promise.all([
+    tx.stockIn.aggregate({
+      where: { dealerId, productId: item.productId, origin: 'DEALER_SUPPLY' },
+      _sum: { quantity: true },
+    }),
+    tx.stockIn.aggregate({                                            // ✅ ADD
+      where: { dealerId, productId: item.productId, origin: 'SALES_RETURN' },
+      _sum: { quantity: true },
+    }),
+    tx.stockOut.aggregate({
+      where: { invoice: { dealerId }, productId: item.productId },
+      _sum: { quantity: true },
+    }),
+  ])
+  const histRows = await tx.dealerHistoricalStock.findMany({
+    where: { dealerId, productId: item.productId, type: 'IN' },
+    select: { quantity: true, usedQuantity: true },
+  })
+
+  const histQty = histRows.reduce((s, h) => s + (h.quantity - (h.usedQuantity || 0)), 0)
+  const balance =
+    (givenAgg._sum.quantity || 0) -
+    (returnedAgg._sum.quantity || 0) +          // ✅ FIX — subtract returns
+    histQty -
+    (invoicedAgg._sum.quantity || 0)
+
+  if (Number(item.quantity) > balance) {
+    throw {
+      statusCode: 400,
+      message: `Insufficient dealer stock for "${item.product?.name || item.productName}". Available: ${balance}, requested: ${item.quantity}.`,
+    }
+  }
+}
+
+   
 
       // ── 4. Manual product WITHOUT serials — historical quantity deduct ──
       if (!item.productId && allSerialIds.length === 0) {
-        const histRecords = await tx.dealerHistoricalStock.findMany({
-          where: {
-            dealerId,
-            productId: null,
-            productName: item.productName,
-            type: 'IN',
-            quantity: { gt: 0 },
-          },
-          orderBy: { date: 'asc' },
-        })
-
-        let remaining = Number(item.quantity)
-        for (const hist of histRecords) {
-          if (remaining <= 0) break
-          const deduct = Math.min(hist.quantity, remaining)
-          await tx.dealerHistoricalStock.update({
-            where: { id: hist.id },
-            data: { quantity: { decrement: deduct } },
-          })
-          remaining -= deduct
-        }
-
-        if (remaining > 0) {
-          throw { statusCode: 400, message: `Insufficient historical stock for "${item.productName}".` }
-        }
-      }
+  const histRecords = await tx.dealerHistoricalStock.findMany({
+    where: { dealerId, productId: null, productName: item.productName, type: 'IN' },
+    orderBy: { date: 'asc' },
+  })
+  let remaining = Number(item.quantity)
+  const consumption = []   // ✅ track karo kis record se kitna liya — reversal ke liye zaroori
+  for (const hist of histRecords) {
+    if (remaining <= 0) break
+    const available = hist.quantity - (hist.usedQuantity || 0)
+    if (available <= 0) continue
+    const deduct = Math.min(available, remaining)
+    await tx.dealerHistoricalStock.update({
+      where: { id: hist.id },
+      data: { usedQuantity: { increment: deduct } },   // ✅ quantity static rahegi, sirf usedQuantity badhegi
+    })
+    consumption.push({ histId: hist.id, qty: deduct })
+    remaining -= deduct
+  }
+  if (remaining > 0) {
+    throw { statusCode: 400, message: `Insufficient historical stock for "${item.productName}".` }
+  }
+  item._historicalConsumption = consumption   // StockOut me save karne ke liye niche use hoga
+}
 
       // ── StockOut record create ──────────────────────────────────────────
       await tx.stockOut.create({
@@ -326,6 +360,8 @@ async function processInvoiceItems(tx, ctx) {
           date: date ? new Date(date) : new Date(),
           createdBy: user.id,
           manualSerialNumbers: manualEntries.map(e => e.sn),  
+          manualConsumption: manualEntries,  
+          historicalConsumption: item._historicalConsumption || [],
         },
       })
 
@@ -438,29 +474,55 @@ async function reverseInvoiceItems(tx, existing) {
         const remaining = (hist?.usedSerialNumbers || []).filter(sn => !sns.includes(sn))
         await tx.dealerHistoricalStock.update({
           where: { id: histId },
-          data: { quantity: { increment: sns.length }, usedSerialNumbers: { set: remaining } },
+          data: { usedSerialNumbers: { set: remaining } },
         })
       }
     }
-// Manual hist_ serials reverse karo — ab StockOut.manualSerialNumbers se track ho sakta hai
-const stockOutsWithManual = await tx.stockOut.findMany({
-  where: { invoiceId: existing.id, manualSerialNumbers: { isEmpty: false } },
-  select: { id: true, productName: true, manualSerialNumbers: true },
+
+    // ── Manual hist_ serials reverse karo — StockOut.manualSerialNumbers se track ──
+    // ── Manual serials reverse karo — histId-tagged manualConsumption se (productName guess nahi) ──
+const stockOutsWithManualConsumption = await tx.stockOut.findMany({
+  where: { invoiceId: existing.id },
+  select: { id: true, manualConsumption: true },
 })
-for (const so of stockOutsWithManual) {
-  const sourceHist = await tx.dealerHistoricalStock.findFirst({
-    where: { dealerId: existing.dealerId, productId: null, productName: so.productName, type: 'IN' },
-    select: { id: true, usedSerialNumbers: true },
-  })
-  if (sourceHist) {
-    const remaining = (sourceHist.usedSerialNumbers || []).filter(sn => !so.manualSerialNumbers.includes(sn))
+for (const so of stockOutsWithManualConsumption) {
+  const entries = Array.isArray(so.manualConsumption) ? so.manualConsumption : []
+  if (!entries.length) continue
+
+  const grouped = {}
+  for (const { histId, sn } of entries) {
+    if (!grouped[histId]) grouped[histId] = []
+    grouped[histId].push(sn)
+  }
+  for (const [histId, sns] of Object.entries(grouped)) {
+    const hist = await tx.dealerHistoricalStock.findUnique({
+      where: { id: histId },
+      select: { usedSerialNumbers: true },
+    })
+    const remaining = (hist?.usedSerialNumbers || []).filter(sn => !sns.includes(sn))
     await tx.dealerHistoricalStock.update({
-      where: { id: sourceHist.id },
-      data: { quantity: { increment: so.manualSerialNumbers.length }, usedSerialNumbers: { set: remaining } },
+      where: { id: histId },
+      data: { usedSerialNumbers: { set: remaining } },
     })
   }
 }
-    } else {
+
+    // ── Non-serial manual product consumption reverse karo ──
+    const stockOutsWithHistConsumption = await tx.stockOut.findMany({
+      where: { invoiceId: existing.id, NOT: { historicalConsumption: { equals: null } } },
+      select: { id: true, historicalConsumption: true },
+    })
+    for (const so of stockOutsWithHistConsumption) {
+      const entries = so.historicalConsumption || []
+      for (const { histId, qty } of entries) {
+        await tx.dealerHistoricalStock.update({
+          where: { id: histId },
+          data: { usedQuantity: { decrement: qty } },
+        })
+      }
+    }
+
+  } else {
     for (const stockOut of existing.stockOuts) {
       if (stockOut.serialNumbers.length > 0) {
         await tx.serialNumber.updateMany({
@@ -479,6 +541,8 @@ for (const so of stockOutsWithManual) {
 
   await tx.stockOut.deleteMany({ where: { invoiceId: existing.id } })
 }
+
+
 
 export const getInvoiceById = async (id, user) => {
   const invoice = await prisma.invoice.findUnique({

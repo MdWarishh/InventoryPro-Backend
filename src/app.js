@@ -22,6 +22,8 @@ import { sseRouter } from './sse/sse.manager.js'
 import { errorMiddleware } from './middlewares/error.middleware.js'
 import attendanceRoutes from './modules/attendance/attendance.routes.js'
 import expensesRouter from './modules/expenses/expenses.routes.js'
+import taskRoutes from './modules/tasks/task.routes.js'
+import labelsRoutes from './modules/labels/labels.routes.js'
 
 const app = express()
 
@@ -31,8 +33,8 @@ app.use(helmet())
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://inventory-pro-frontend-alpha.vercel.app',
-  'https://crm.limrahearingcare.com', // 🔥 add this FIXED
+  // 'https://inventory-pro-frontend-alpha.vercel.app',
+  // 'https://crm.limrahearingcare.com', // 🔥 add this FIXED
 ]
 
 app.use(cors({
@@ -80,6 +82,8 @@ app.use('/api/settings', settingsRoutes)
 app.use('/api/sse', sseRouter)
 app.use('/api/attendance', attendanceRoutes)
 app.use('/api/expenses', expensesRouter)
+app.use('/api/tasks', taskRoutes)
+app.use('/api/labels', labelsRoutes)
 app.use(errorMiddleware)
 
 export default app

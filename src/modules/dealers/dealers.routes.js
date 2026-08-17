@@ -35,8 +35,7 @@ router.put('/:id/stock-in/:stockInId',    isAdminOrAbove, dealersController.upda
 router.delete('/:id/stock-in/:stockInId', isAdminOrAbove, dealersController.deleteStockIn)
 
 // ─── STOCK OUT ────────────────────────────────────────────────────────────────
-router.get('/:id/stock-out',  dealersController.getStockOutHistory)
-router.post('/:id/stock-out', isAdminOrAbove, dealersController.createStockOut)
+
 
 router.post('/:id/stock-return', isAdminOrAbove, dealersController.createSalesReturn)
 
@@ -47,7 +46,7 @@ router.post('/:id/stock-return', isAdminOrAbove, dealersController.createSalesRe
 router.get('/:id/historical-stock',              isAdminOrAbove, dealersController.getHistoricalStock)
 router.post('/:id/historical-stock',             isAdminOrAbove, dealersController.addHistoricalStock)
 router.delete('/:id/historical-stock/:recordId', isAdminOrAbove, dealersController.deleteHistoricalStock)
-
+router.put('/:id/historical-stock/:recordId', isAdminOrAbove, dealersController.updateHistoricalStock)
 // ─── OLD DEALER INVOICES (backward compat — DealerInvoice model) ──────────────
 router.get('/:id/invoices',            isAdminOrAbove, dealersController.getInvoices)
 router.post('/:id/invoices',           isAdminOrAbove, dealersController.createInvoice)
@@ -57,4 +56,7 @@ router.get('/:id/invoices/:invoiceId', isAdminOrAbove, dealersController.getInvo
 // NEW: GET /dealers/:id/main-invoices
 router.get('/:id/main-invoices', isAdminOrAbove, dealersController.getMainInvoices)
 
+router.get('/:id/graph', dealersController.getDealerGraph)
+router.get('/:id/export-report', isAdminOrAbove, dealersController.exportStockReport)
+router.get('/:id/sales-stats', dealersController.getSalesStats)
 export default router

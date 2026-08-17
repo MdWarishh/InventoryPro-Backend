@@ -81,24 +81,6 @@ export const getStockSummary = async (req, res) => {
   sendSuccess(res, result)
 }
 
-// ─── STOCK OUT ────────────────────────────────────────────────────────────────
-
-export const createStockOut = async (req, res) => {
-  // productId nahi hai = manual/free-text product → alag flow
-  if (!req.body.productId) {
-    const result = await dealersService.createDealerManualStockOut(req.params.id, req.body)
-    return sendSuccess(res, result, 'Dealer sale recorded successfully.', 201)
-  }
-
-  const stockOut = await dealersService.createDealerStockOut(req.params.id, req.body)
-  sendSuccess(res, stockOut, 'Dealer sale recorded successfully.', 201)
-}
-
-export const getStockOutHistory = async (req, res) => {
-  const result = await dealersService.getDealerStockOutHistory(req.params.id, req.query)
-  sendSuccess(res, result)
-}
-
 // ─── OLD DEALER INVOICES (backward compat) ────────────────────────────────────
 
 export const createInvoice = async (req, res) => {
@@ -166,4 +148,30 @@ export const updateStockIn = async (req, res) => {
 export const deleteStockIn = async (req, res) => {
   const result = await dealersService.deleteDealerStockIn(req.params.id, req.params.stockInId)
   sendSuccess(res, result, result.message)
+}
+
+export const getDealerGraph = async (req, res) => {
+  const result = await dealersService.getDealerGraphData(req.params.id)
+  sendSuccess(res, result)
+}
+
+export const exportStockReport = async (req, res) => {
+  const { startDate, endDate } = req.query
+  const { workbook, dealerName } = await dealersService.exportDealerStockReportExcel(req.params.id, startDate, endDate)
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', `attachment; filename=${dealerName.replace(/\s+/g, '_')}_stock_report.xlsx`)
+
+  await workbook.xlsx.write(res)
+  res.end()
+}
+
+export const getSalesStats = async (req, res) => {
+  const result = await dealersService.getDealerSalesStats(req.params.id)
+  sendSuccess(res, result)
+}
+
+export const updateHistoricalStock = async (req, res) => {
+  const record = await dealersService.updateDealerHistoricalStock(req.params.id, req.params.recordId, req.body)
+  sendSuccess(res, record, 'Historical stock updated successfully.')
 }

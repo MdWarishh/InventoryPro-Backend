@@ -11,7 +11,8 @@ const checkBranchAccess = (user, branchId) => {
 // ─── STOCK IN ─────────────────────────────────────────────────────────────────
 
 export const stockIn = async (data, user) => {
-  const { productId, branchId, quantity, purchasePrice, dealerId, sourceNote, referenceNo, date, serialNumbers } = data
+  const { productId, branchId, quantity, purchasePrice, mrp, dealerId, sourceNote, referenceNo, date, serialNumbers } = data
+  // ✅ mrp destructure add kiya
 
   checkBranchAccess(user, branchId)
 
@@ -31,6 +32,7 @@ export const stockIn = async (data, user) => {
         productId, branchId,
         quantity: Number(quantity),
         purchasePrice: Number(purchasePrice),
+        mrp: Number(mrp) || 0,   // ✅ ADD
         dealerId: dealerId || null,
         sourceNote, referenceNo,
         date: date ? new Date(date) : new Date(),
@@ -63,11 +65,10 @@ export const stockIn = async (data, user) => {
       create: { productId, branchId, currentStock: Number(quantity) },
     })
 
-
     await tx.product.update({
-  where: { id: productId },
-  data: { purchasePrice: Number(purchasePrice) },
-})
+      where: { id: productId },
+      data: { purchasePrice: Number(purchasePrice), mrp: Number(mrp) || 0 },  // ✅ mrp bhi add
+    })
 
     return stockInRecord
   })
@@ -86,7 +87,8 @@ export const stockIn = async (data, user) => {
 // ─── STOCK IN: UPDATE ─────────────────────────────────────────────────────────
 
 export const updateStockIn = async (id, data, user) => {
-  const { quantity, purchasePrice, dealerId, sourceNote, referenceNo, date, serialNumbers } = data
+  const { quantity, purchasePrice, mrp, dealerId, sourceNote, referenceNo, date, serialNumbers } = data
+  // ✅ mrp destructure add kiya
 
   const existing = await prisma.stockIn.findUnique({
     where: { id },
@@ -96,7 +98,6 @@ export const updateStockIn = async (id, data, user) => {
 
   checkBranchAccess(user, existing.branchId)
 
-  // Check if any serial numbers from this record are already SOLD — block edit if so
   if (existing.serialNumbers?.length) {
     const soldSerials = existing.serialNumbers.filter(s => s.status === 'SOLD')
     if (soldSerials.length > 0) {
@@ -111,9 +112,8 @@ export const updateStockIn = async (id, data, user) => {
 
   const newQty = Number(quantity)
   const oldQty = existing.quantity
-  const qtyDiff = newQty - oldQty // positive = stock increase, negative = stock decrease
+  const qtyDiff = newQty - oldQty
 
-  // Validate serial numbers if product requires them
   if (product.hasSerialNumbers) {
     if (!serialNumbers || serialNumbers.length === 0) {
       throw { statusCode: 400, message: 'Serial numbers are required for this product.' }
@@ -124,19 +124,16 @@ export const updateStockIn = async (id, data, user) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    // Update productStock by applying the diff
     await tx.productStock.update({
       where: { productId_branchId: { productId: existing.productId, branchId: existing.branchId } },
       data: { currentStock: { increment: qtyDiff } },
     })
 
-    // Handle serial numbers: delete old AVAILABLE ones, create new ones
     if (product.hasSerialNumbers && serialNumbers?.length) {
       await tx.serialNumber.deleteMany({
         where: { stockInId: id, status: 'AVAILABLE' },
       })
 
-      // Check for duplicates excluding the ones we just deleted
       const duplicates = await tx.serialNumber.findMany({
         where: { serialNumber: { in: serialNumbers }, productId: existing.productId },
       })
@@ -157,15 +154,16 @@ export const updateStockIn = async (id, data, user) => {
     }
 
     await tx.product.update({
-  where: { id: existing.productId },
-  data: { purchasePrice: Number(purchasePrice) },
-})
+      where: { id: existing.productId },
+      data: { purchasePrice: Number(purchasePrice), mrp: Number(mrp) || 0 },  // ✅ mrp bhi add
+    })
 
     return tx.stockIn.update({
       where: { id },
       data: {
         quantity: newQty,
         purchasePrice: Number(purchasePrice),
+        mrp: Number(mrp) || 0,   // ✅ ADD
         dealerId: dealerId || null,
         sourceNote, referenceNo,
         date: date ? new Date(date) : existing.date,
@@ -183,7 +181,6 @@ export const updateStockIn = async (id, data, user) => {
     },
   })
 }
-
 // ─── STOCK IN: DELETE ─────────────────────────────────────────────────────────
 
 export const deleteStockIn = async (id, user) => {
@@ -544,7 +541,9 @@ export const getProductsWithStock = async (user, { branchId, categoryId, search 
           name: true,
           sku: true,
           brand: true,
+           purchasePrice: true, 
           sellingPrice: true,
+          mrp: true,              
           hasSerialNumbers: true,
           minStockAlert: true,
           category: { select: { id: true, name: true, color: true } },
