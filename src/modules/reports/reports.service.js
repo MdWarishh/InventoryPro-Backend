@@ -332,22 +332,24 @@ export const getGSTReport = async (user, { branchId, month, year, type = 'summar
       orderBy: { date: 'asc' },
     })
 
-    return sales.map(s => ({
-      invoiceNumber: s.invoice?.invoiceNumber || 'N/A',
-      invoiceDate: s.date,
-      customerName: s.invoice?.customerName || s.customerName || 'Consumer',
-      customerGST: s.invoice?.customerGST || 'N/A',
-      hsnCode: s.product.hsnCode || 'N/A',
-      productName: s.product.name,
-      quantity: s.quantity,
-      taxableValue: s.sellingPrice * s.quantity,
-      gstRate: s.product.gstRate,
-      cgst: (s.sellingPrice * s.quantity * s.product.gstRate) / 200,
-      sgst: (s.sellingPrice * s.quantity * s.product.gstRate) / 200,
-      igst: 0,
-      totalTax: (s.sellingPrice * s.quantity * s.product.gstRate) / 100,
-      invoiceValue: s.sellingPrice * s.quantity * (1 + s.product.gstRate / 100),
-    }))
+    return sales
+  .filter(s => s.product) // ✅ null product wale skip
+  .map(s => ({
+    invoiceNumber: s.invoice?.invoiceNumber || 'N/A',
+    invoiceDate: s.date,
+    customerName: s.invoice?.customerName || s.customerName || 'Consumer',
+    customerGST: s.invoice?.customerGST || 'N/A',
+    hsnCode: s.product.hsnCode || 'N/A',
+    productName: s.product.name,
+    quantity: s.quantity,
+    taxableValue: s.sellingPrice * s.quantity,
+    gstRate: s.product.gstRate,
+    cgst: (s.sellingPrice * s.quantity * s.product.gstRate) / 200,
+    sgst: (s.sellingPrice * s.quantity * s.product.gstRate) / 200,
+    igst: 0,
+    totalTax: (s.sellingPrice * s.quantity * s.product.gstRate) / 100,
+    invoiceValue: s.sellingPrice * s.quantity * (1 + s.product.gstRate / 100),
+  }))
   }
 
   if (type === 'gstr2') {
@@ -361,20 +363,22 @@ export const getGSTReport = async (user, { branchId, month, year, type = 'summar
       orderBy: { date: 'asc' },
     })
 
-    return purchases.map(p => ({
-      date: p.date,
-      dealerName: p.dealer?.name || 'Unknown',
-      dealerGST: p.dealer?.gstNumber || 'N/A',
-      hsnCode: p.product.hsnCode || 'N/A',
-      productName: p.product.name,
-      quantity: p.quantity,
-      taxableValue: p.purchasePrice * p.quantity,
-      gstRate: p.product.gstRate,
-      cgst: (p.purchasePrice * p.quantity * p.product.gstRate) / 200,
-      sgst: (p.purchasePrice * p.quantity * p.product.gstRate) / 200,
-      igst: 0,
-      totalTax: (p.purchasePrice * p.quantity * p.product.gstRate) / 100,
-    }))
+  return purchases
+  .filter(p => p.product) // ✅ null product wale skip
+  .map(p => ({
+    date: p.date,
+    dealerName: p.dealer?.name || 'Unknown',
+    dealerGST: p.dealer?.gstNumber || 'N/A',
+    hsnCode: p.product.hsnCode || 'N/A',
+    productName: p.product.name,
+    quantity: p.quantity,
+    taxableValue: p.purchasePrice * p.quantity,
+    gstRate: p.product.gstRate,
+    cgst: (p.purchasePrice * p.quantity * p.product.gstRate) / 200,
+    sgst: (p.purchasePrice * p.quantity * p.product.gstRate) / 200,
+    igst: 0,
+    totalTax: (p.purchasePrice * p.quantity * p.product.gstRate) / 100,
+  }))
   }
 
   const [salesData, purchaseData] = await Promise.all([
@@ -382,19 +386,20 @@ export const getGSTReport = async (user, { branchId, month, year, type = 'summar
     prisma.stockIn.findMany({ where: purchaseFilter, include: { product: { select: { gstRate: true } } } }), // ✅ FIX
   ])
 
-  const salesByRate = {}
-  for (const s of salesData) {
-    const rate = s.product.gstRate
-    const taxable = s.sellingPrice * s.quantity
-    if (!salesByRate[rate]) salesByRate[rate] = { rate, taxableValue: 0, cgst: 0, sgst: 0, totalTax: 0 }
-    salesByRate[rate].taxableValue += taxable
-    salesByRate[rate].cgst += (taxable * rate) / 200
-    salesByRate[rate].sgst += (taxable * rate) / 200
-    salesByRate[rate].totalTax += (taxable * rate) / 100
-  }
+ const salesByRate = {}
+for (const s of salesData) {
+  if (!s.product) continue // ✅ null product skip
+  const rate = s.product.gstRate
+  const taxable = s.sellingPrice * s.quantity
+  if (!salesByRate[rate]) salesByRate[rate] = { rate, taxableValue: 0, cgst: 0, sgst: 0, totalTax: 0 }
+  salesByRate[rate].taxableValue += taxable
+  salesByRate[rate].cgst += (taxable * rate) / 200
+  salesByRate[rate].sgst += (taxable * rate) / 200
+  salesByRate[rate].totalTax += (taxable * rate) / 100
+}
 
-  const totalOutputTax = salesData.reduce((sum, s) => sum + (s.sellingPrice * s.quantity * s.product.gstRate) / 100, 0)
-  const totalInputTax = purchaseData.reduce((sum, p) => sum + (p.purchasePrice * p.quantity * p.product.gstRate) / 100, 0)
+const totalOutputTax = salesData.reduce((sum, s) => s.product ? sum + (s.sellingPrice * s.quantity * s.product.gstRate) / 100 : sum, 0)
+const totalInputTax = purchaseData.reduce((sum, p) => p.product ? sum + (p.purchasePrice * p.quantity * p.product.gstRate) / 100 : sum, 0)
 
   return {
     month, year,
