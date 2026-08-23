@@ -8,14 +8,12 @@ const branchWhere = (user, branchId) => {
 
 // ─── Monthly Revenue (last N months) ─────────────────────────────────────────
 export const getMonthlyRevenue = async (user, { months = 6, branchId } = {}) => {
-  const where = branchWhere(user, branchId)
+  const where = { ...branchWhere(user, branchId), invoiceId: { not: null } } // ✅ FIX
 
   const records = await prisma.stockOut.findMany({
     where: {
       ...where,
-      date: {
-        gte: new Date(new Date().setMonth(new Date().getMonth() - months + 1, 1)),
-      },
+      date: { gte: new Date(new Date().setMonth(new Date().getMonth() - months + 1, 1)) },
     },
     select: { date: true, quantity: true, sellingPrice: true },
   })
@@ -49,14 +47,12 @@ export const getMonthlyRevenue = async (user, { months = 6, branchId } = {}) => 
 
 // ─── Yearly Revenue (last N years) ───────────────────────────────────────────
 export const getYearlyRevenue = async (user, { years = 3, branchId } = {}) => {
-  const where = branchWhere(user, branchId)
+  const where = { ...branchWhere(user, branchId), invoiceId: { not: null } } // ✅ FIX
 
   const records = await prisma.stockOut.findMany({
     where: {
       ...where,
-      date: {
-        gte: new Date(new Date().getFullYear() - years + 1, 0, 1),
-      },
+      date: { gte: new Date(new Date().getFullYear() - years + 1, 0, 1) },
     },
     select: { date: true, quantity: true, sellingPrice: true },
   })
@@ -86,13 +82,9 @@ export const getYearlyRevenue = async (user, { years = 3, branchId } = {}) => {
 export const getBreakdown = async (user, { branchId, startDate, endDate } = {}) => {
   const where = {
     ...branchWhere(user, branchId),
+    invoiceId: { not: null },   // ✅ FIX
     ...(startDate || endDate
-      ? {
-          date: {
-            ...(startDate && { gte: new Date(startDate) }),
-            ...(endDate && { lte: new Date(endDate) }),
-          },
-        }
+      ? { date: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } }
       : {}),
   }
 
@@ -144,13 +136,9 @@ export const getBreakdown = async (user, { branchId, startDate, endDate } = {}) 
 export const getSummary = async (user, { branchId, startDate, endDate } = {}) => {
   const where = {
     ...branchWhere(user, branchId),
+    invoiceId: { not: null },   // ✅ FIX
     ...(startDate || endDate
-      ? {
-          date: {
-            ...(startDate && { gte: new Date(startDate) }),
-            ...(endDate && { lte: new Date(endDate) }),
-          },
-        }
+      ? { date: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } }
       : {}),
   }
 

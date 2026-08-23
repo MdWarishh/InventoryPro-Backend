@@ -49,49 +49,64 @@ export const getAllDealers = async ({ page = 1, limit = 20, search, branchId } =
   const [dealerStockIns, dealerInvoiceStockOuts, dealerHistoricalIn] = await Promise.all([
     prisma.stockIn.findMany({
       where: { dealerId: { in: dealerIds } },
-      select: { dealerId: true, quantity: true, purchasePrice: true, mrp: true, sourceNote: true },
+      select: { dealerId: true, productId: true, quantity: true, purchasePrice: true, mrp: true, sourceNote: true },
     }),
     prisma.stockOut.findMany({
       where: { invoice: { dealerId: { in: dealerIds } } },
-      select: { quantity: true, sellingPrice: true, invoice: { select: { dealerId: true } } },
+      select: { productId: true, quantity: true, sellingPrice: true, invoice: { select: { dealerId: true } } },
     }),
     // ✅ Historical ab sirf type: IN — OUT concept hata diya gaya hai
     prisma.dealerHistoricalStock.findMany({
       where: { dealerId: { in: dealerIds }, type: 'IN' },
-      select: { dealerId: true, quantity: true, purchasePrice: true, mrp: true, serialNumbers: true },
+      select: { dealerId: true, productId: true, quantity: true, purchasePrice: true, mrp: true, serialNumbers: true },
     }),
   ])
 
   const financeMap = {}
   const ensureFinance = (id) => {
-    if (!financeMap[id]) financeMap[id] = { stockQty: 0, saleQty: 0, stockValueMrp: 0, purchaseCost: 0, saleRevenue: 0 }
+    if (!financeMap[id]) financeMap[id] = { stockQty: 0, saleQty: 0, stockValueMrp: 0, cogs: 0, saleRevenue: 0 }
     return financeMap[id]
   }
-  for (const si of dealerStockIns) {
-    if (si.sourceNote?.toUpperCase().includes('SALES RETURN')) continue
-    const f = ensureFinance(si.dealerId)
-    f.stockQty += si.quantity
-    f.purchaseCost += si.purchasePrice * si.quantity
-    f.stockValueMrp += (si.mrp || 0) * si.quantity
-  }
-  for (const h of dealerHistoricalIn) {
-    const f = ensureFinance(h.dealerId)
-    const origQty = h.serialNumbers?.length || h.quantity
-    f.purchaseCost += (h.purchasePrice || 0) * origQty
-    f.stockQty += origQty
-    f.stockValueMrp += (h.mrp || 0) * origQty
-  }
-  // ✅ Sale/Revenue — SIRF Invoice se
-  for (const so of dealerInvoiceStockOuts) {
-    const dId = so.invoice.dealerId
-    if (!dId) continue
-    const f = ensureFinance(dId)
-    f.saleQty += so.quantity
-    f.saleRevenue += so.sellingPrice * so.quantity
-  }
+
+  // ✅ NEW — dealer+product level weighted-average cost tracking (COGS fix)
+ const productCostMap = {}
+const costKey = (dealerId, productId, productName) => productId ? `${dealerId}::pid:${productId}` : `${dealerId}::name:${productName}`
+const ensureProductCost = (key) => {
+  if (!productCostMap[key]) productCostMap[key] = { qty: 0, cost: 0 }
+  return productCostMap[key]
+}
+
+for (const si of dealerStockIns) {
+  if (si.sourceNote?.toUpperCase().includes('SALES RETURN')) continue
+  const f = ensureFinance(si.dealerId)
+  f.stockQty += si.quantity
+  f.stockValueMrp += (si.mrp || 0) * si.quantity
+  const pc = ensureProductCost(costKey(si.dealerId, si.productId, null))
+  pc.qty += si.quantity
+  pc.cost += si.purchasePrice * si.quantity
+}
+for (const h of dealerHistoricalIn) {
+  const f = ensureFinance(h.dealerId)
+  const origQty = h.serialNumbers?.length || h.quantity
+  f.stockQty += origQty
+  f.stockValueMrp += (h.mrp || 0) * origQty
+  const pc = ensureProductCost(costKey(h.dealerId, h.productId, h.productName)) // ✅ productName pass
+  pc.qty += origQty
+  pc.cost += (h.purchasePrice || 0) * origQty
+}
+for (const so of dealerInvoiceStockOuts) {
+  const dId = so.invoice.dealerId
+  if (!dId) continue
+  const f = ensureFinance(dId)
+  f.saleQty += so.quantity
+  f.saleRevenue += so.sellingPrice * so.quantity
+  const pc = productCostMap[costKey(dId, so.productId, so.productName)] // ✅ productName fallback
+  const avgCostPerUnit = pc && pc.qty > 0 ? pc.cost / pc.qty : 0
+  f.cogs += avgCostPerUnit * so.quantity
+}
 
   const dealersWithCount = dealers.map(d => {
-    const fin = financeMap[d.id] || { stockQty: 0, saleQty: 0, stockValueMrp: 0, purchaseCost: 0, saleRevenue: 0 }
+    const fin = financeMap[d.id] || { stockQty: 0, saleQty: 0, stockValueMrp: 0, cogs: 0, saleRevenue: 0 }
     return {
       ...d,
       _count: {
@@ -102,7 +117,7 @@ export const getAllDealers = async ({ page = 1, limit = 20, search, branchId } =
       stockIn: fin.stockQty,           // card: "Stock In"
       totalSale: fin.saleQty,          // card: "Sale" — invoice se
       stockValue: fin.stockValueMrp,   // card: "Stock Value" — MRP based
-      allTimeProfit: Math.max(0, fin.saleRevenue - fin.purchaseCost),
+      allTimeProfit: Math.max(0, fin.saleRevenue - fin.cogs), // ✅ FIX: sirf sold units ka cost minus hota hai ab
     }
   })
 
@@ -941,12 +956,36 @@ export const getDealersOverviewStats = async (branchId) => {
     .filter(so => inMonth(so.date))
     .reduce((sum, so) => sum + so.sellingPrice * so.quantity, 0)
 
-  // ── All Profit — Invoice revenue - purchase cost, all time, clamp 0 ──
+  // ── All Profit — Invoice revenue - COGS (sirf sold units ka weighted-avg purchase price), clamp 0 ──
   const realStockInsAllTime = allStockIns.filter(si => !si.sourceNote?.toUpperCase().includes('SALES RETURN'))
-  const totalPurchaseCostAllTime =
-    realStockInsAllTime.reduce((sum, si) => sum + si.purchasePrice * si.quantity, 0) +
-    allHistorical.reduce((sum, h) => sum + (h.purchasePrice || 0) * (h.serialNumbers?.length || h.quantity), 0)
-  const allProfit = Math.max(0, totalWholesaleRevenue - totalPurchaseCostAllTime)
+
+  // ✅ NEW — dealer+product level weighted-average cost tracking (COGS fix)
+  const productCostMap = new Map()
+  const addCost = (dealerId, productId, qty, cost) => {
+    if (!productId) return
+    const key = `${dealerId}::${productId}`
+    if (!productCostMap.has(key)) productCostMap.set(key, { qty: 0, cost: 0 })
+    const pc = productCostMap.get(key)
+    pc.qty += qty
+    pc.cost += cost
+  }
+  for (const si of realStockInsAllTime) addCost(si.dealerId, si.productId, si.quantity, si.purchasePrice * si.quantity)
+  for (const h of allHistorical) {
+    const qty = h.serialNumbers?.length || h.quantity
+    addCost(h.dealerId, h.productId, qty, (h.purchasePrice || 0) * qty)
+  }
+
+  // ✅ COGS — sirf becha gaya units ka weighted-avg cost
+  let totalCOGS = 0
+  for (const so of allInvoiceStockOuts) {
+    const dId = so.invoice.dealerId
+    if (!dId || !so.productId) continue
+    const pc = productCostMap.get(`${dId}::${so.productId}`)
+    const avgCostPerUnit = pc && pc.qty > 0 ? pc.cost / pc.qty : 0
+    totalCOGS += avgCostPerUnit * so.quantity
+  }
+
+  const allProfit = Math.max(0, totalWholesaleRevenue - totalCOGS)
 
   // ── Products in hand / Low stock ──
   const balanceMap = new Map()
@@ -1463,29 +1502,48 @@ export const getDealerGraphData = async (dealerId) => {
   const [stockIns, invoiceStockOuts, historical] = await Promise.all([
     prisma.stockIn.findMany({
       where: { dealerId },
-      select: { quantity: true, purchasePrice: true, mrp: true, sourceNote: true, date: true },
+      select: { productId: true, quantity: true, purchasePrice: true, mrp: true, sourceNote: true, date: true },
     }),
-    // ✅ Sale — sirf Invoice se
     prisma.stockOut.findMany({
       where: { invoice: { dealerId } },
-      select: { quantity: true, sellingPrice: true, date: true },
+      select: { productId: true, productName: true, quantity: true, sellingPrice: true, date: true }, // ✅ productName add kiya
     }),
-    // ✅ sirf type: IN
     prisma.dealerHistoricalStock.findMany({
       where: { dealerId, type: 'IN' },
-      select: { quantity: true, purchasePrice: true, date: true, mrp: true, serialNumbers: true },
+      select: { productId: true, productName: true, quantity: true, purchasePrice: true, date: true, mrp: true, serialNumbers: true }, // ✅ productName add kiya
     }),
   ])
 
   const realStockIns = stockIns.filter(si => !si.sourceNote?.toUpperCase().includes('SALES RETURN'))
-
-  const allTimePurchasePrice =
-    realStockIns.reduce((s, si) => s + si.purchasePrice * si.quantity, 0) +
-    historical.reduce((s, h) => s + h.purchasePrice * (h.serialNumbers?.length || h.quantity), 0)
-
   const allTimeSalesPrice = invoiceStockOuts.reduce((s, so) => s + so.sellingPrice * so.quantity, 0)
 
-  const allTimeProfit = Math.max(0, allTimeSalesPrice - allTimePurchasePrice)
+  // ✅ FIX — key productId ya productName dono se ban sakti hai
+  const costKey = (productId, productName) => productId ? `pid:${productId}` : `name:${productName}`
+
+  const productCostMap = new Map()
+  const addCost = (key, qty, cost) => {
+    if (!key) return
+    if (!productCostMap.has(key)) productCostMap.set(key, { qty: 0, cost: 0 })
+    const pc = productCostMap.get(key)
+    pc.qty += qty
+    pc.cost += cost
+  }
+
+  realStockIns.forEach(si => addCost(costKey(si.productId, null), si.quantity, si.purchasePrice * si.quantity))
+  historical.forEach(h => addCost(
+    costKey(h.productId, h.productName),
+    h.serialNumbers?.length || h.quantity,
+    (h.purchasePrice || 0) * (h.serialNumbers?.length || h.quantity)
+  ))
+
+  const allTimeCOGS = invoiceStockOuts.reduce((sum, so) => {
+    const pc = productCostMap.get(costKey(so.productId, so.productName))
+    const avgCostPerUnit = pc && pc.qty > 0 ? pc.cost / pc.qty : 0
+    return sum + avgCostPerUnit * so.quantity
+  }, 0)
+
+  const allTimePurchasePrice = allTimeCOGS
+  const allTimeProfit = Math.max(0, allTimeSalesPrice - allTimeCOGS)
 
   const stockValueMrp =
     realStockIns.reduce((s, si) => s + (si.mrp || 0) * si.quantity, 0) +
@@ -1494,13 +1552,12 @@ export const getDealerGraphData = async (dealerId) => {
   const now = new Date()
   const yearStart = new Date(now.getFullYear(), 0, 1)
   const monthlySales = Array(12).fill(0)
-  const addToMonth = (date, amount) => {
-    const d = new Date(date)
-    if (d >= yearStart) monthlySales[d.getMonth()] += amount
-  }
-  invoiceStockOuts.forEach(so => addToMonth(so.date, so.sellingPrice * so.quantity))
+  invoiceStockOuts.forEach(so => {
+    const d = new Date(so.date)
+    if (d >= yearStart) monthlySales[d.getMonth()] += so.sellingPrice * so.quantity
+  })
 
-  return { allTimePurchasePrice, allTimeSalesPrice, allTimeProfit, stockValueMrp, monthlySales }
+  return { allTimePurchasePrice, allTimeSalesPrice, allTimeProfit, stockValueMrp, monthlySales, allTimeCOGS }
 }
 
 // ─── EXCEL EXPORT ──────────────────────────────────────────────────────────────

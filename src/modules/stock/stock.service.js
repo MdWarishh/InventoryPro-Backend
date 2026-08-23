@@ -450,7 +450,7 @@ export const getStockHistory = async (user, { type, page = 1, limit = 20, branch
     if (startDate) dateFilter.date.gte = new Date(startDate)
     if (endDate) dateFilter.date.lte = new Date(endDate)
   }
-  const where = { ...branchFilter, ...(productId && { productId }), ...dateFilter }
+  const where = { ...branchFilter, ...(productId && { productId }), ...dateFilter, invoiceId: { not: null } }
 
   if (type === 'in') {
     const [items, total] = await Promise.all([

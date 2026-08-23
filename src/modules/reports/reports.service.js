@@ -23,6 +23,7 @@ const getDealerHistFilter = (user, branchId) => {
 
 export const getDashboardStats = async (user, branchId) => {
   const filter = getBranchFilter(user, branchId)
+  const invoiceFilter = { ...filter, invoiceId: { not: null } }   // ✅ NEW
   const today = new Date()
   const startOfToday = new Date(today.setHours(0, 0, 0, 0))
   const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
@@ -36,18 +37,18 @@ export const getDashboardStats = async (user, branchId) => {
     recentStockIns,
     recentStockOuts,
     allStockOuts,
-    totalExpenseAgg,      // ✅ NEW — Expense model se
-    monthExpenseAgg,      // ✅ NEW — Expense model se
-    productStocksForMrp,  // ✅ NEW — MRP-based stock value ke liye
-    mrpStockIns,          // ✅ NEW — MRP-based stock value ke liye
+    totalExpenseAgg,
+    monthExpenseAgg,
+    productStocksForMrp,
+    mrpStockIns,
   ] = await Promise.all([
     prisma.productStock.aggregate({ where: filter, _sum: { currentStock: true } }),
     prisma.productStock.findMany({
       where: filter,
       include: { product: { select: { minStockAlert: true } } },
     }).then(stocks => stocks.filter(s => s.currentStock <= s.product.minStockAlert).length),
-    prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfToday } }, select: { sellingPrice: true, quantity: true } }),
-    prisma.stockOut.findMany({ where: { ...filter, date: { gte: startOfMonth } }, select: { sellingPrice: true, quantity: true } }),
+    prisma.stockOut.findMany({ where: { ...invoiceFilter, date: { gte: startOfToday } }, select: { sellingPrice: true, quantity: true } }), // ✅ FIX
+    prisma.stockOut.findMany({ where: { ...invoiceFilter, date: { gte: startOfMonth } }, select: { sellingPrice: true, quantity: true } }), // ✅ FIX
     prisma.product.count({ where: { isActive: true } }),
     prisma.stockIn.findMany({
       where: filter,
@@ -56,7 +57,7 @@ export const getDashboardStats = async (user, branchId) => {
       include: { product: { select: { name: true, sku: true } }, branch: { select: { name: true } } },
     }),
     prisma.stockOut.findMany({
-      where: filter,
+      where: filter,   // recent activity — as-is chhoda hai, chaho toh invoiceFilter kar do
       take: 5,
       orderBy: { date: 'desc' },
       include: {
@@ -64,13 +65,11 @@ export const getDashboardStats = async (user, branchId) => {
         branch: { select: { name: true } },
       },
     }),
-    prisma.stockOut.findMany({ where: filter, select: { sellingPrice: true, quantity: true } }),
-    // ✅ NEW — total Expense (all-time), branch-filtered
+    prisma.stockOut.findMany({ where: invoiceFilter, select: { sellingPrice: true, quantity: true } }), // ✅ FIX
     prisma.expense.aggregate({
       where: filter.branchId ? { branchId: filter.branchId } : {},
       _sum: { amount: true },
     }),
-    // ✅ NEW — total Expense (this month), branch-filtered
     prisma.expense.aggregate({
       where: {
         ...(filter.branchId ? { branchId: filter.branchId } : {}),
@@ -78,9 +77,7 @@ export const getDashboardStats = async (user, branchId) => {
       },
       _sum: { amount: true },
     }),
-    // ✅ NEW — current stock per product-branch, MRP value ke liye
     prisma.productStock.findMany({ where: filter, select: { productId: true, branchId: true, currentStock: true } }),
-    // ✅ NEW — latest StockIn (origin: PURCHASE) ka mrp, per product-branch
     prisma.stockIn.findMany({
       where: { ...filter, origin: 'PURCHASE' },
       select: { productId: true, branchId: true, mrp: true, date: true },
@@ -90,20 +87,17 @@ export const getDashboardStats = async (user, branchId) => {
 
   const todaySalesAmount = todaySales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
   const monthSalesAmount = monthSales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
-
   const totalRevenue = allStockOuts.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
 
-  // ✅ NEW PROFIT FORMULA — saari invoice sales price − Expense model ka total
   const totalExpense = totalExpenseAgg._sum.amount || 0
   const monthExpense  = monthExpenseAgg._sum.amount || 0
   const totalProfit = totalRevenue - totalExpense
   const monthProfit  = monthSalesAmount - monthExpense
 
-  // ✅ NEW — Total Stock Value, regular branch StockIn (origin: PURCHASE) ke latest mrp se
   const mrpMap = new Map()
   for (const si of mrpStockIns) {
     const key = `${si.productId}::${si.branchId}`
-    if (!mrpMap.has(key)) mrpMap.set(key, si.mrp || 0)  // date desc sorted hai, pehla hi latest
+    if (!mrpMap.has(key)) mrpMap.set(key, si.mrp || 0)
   }
   const totalStockValueMrp = productStocksForMrp.reduce((sum, ps) => {
     const key = `${ps.productId}::${ps.branchId}`
@@ -124,12 +118,13 @@ export const getDashboardStats = async (user, branchId) => {
     totalProfit,
     monthExpense,
     monthProfit,
-    totalStockValueMrp,   // ✅ NEW — dashboard "Total Stock Value" card ke liye
+    totalStockValueMrp,
   }
 }
 
 export const getSalesReport = async (user, { branchId, startDate, endDate, groupBy = 'day' } = {}) => {
   const filter = getBranchFilter(user, branchId)
+   filter.invoiceId = { not: null }  
   const dateFilter = {}
   if (startDate) dateFilter.gte = new Date(startDate)
   if (endDate) dateFilter.lte = new Date(endDate)
@@ -272,7 +267,7 @@ export const getAllBranchesReport = async (user, { startDate, endDate } = {}) =>
     branches.map(async (branch) => {
       // ✅ FIX — aggregate hataya, findMany + reduce (quantity × price sahi calculate karne ke liye)
       const [salesRows, purchaseRows, historicalIn, stockData] = await Promise.all([
-        prisma.stockOut.findMany({ where: { branchId: branch.id, ...dateFilter }, select: { sellingPrice: true, quantity: true } }),
+        prisma.stockOut.findMany({ where: { branchId: branch.id, invoiceId: { not: null }, ...dateFilter }, select: { sellingPrice: true, quantity: true } }),
         prisma.stockIn.findMany({ where: { branchId: branch.id, origin: 'PURCHASE', ...dateFilter }, select: { purchasePrice: true, quantity: true } }), // ✅ origin filter
         prisma.dealerHistoricalStock.findMany({
           where: { type: 'IN', dealer: { branchId: branch.id }, ...dateFilter },
