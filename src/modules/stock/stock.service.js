@@ -441,6 +441,8 @@ export const deleteStockOut = async (id, user) => {
 
 // ─── GET HISTORY ──────────────────────────────────────────────────────────────
 
+// ─── GET HISTORY ──────────────────────────────────────────────────────────────
+
 export const getStockHistory = async (user, { type, page = 1, limit = 20, branchId, productId, startDate, endDate } = {}) => {
   const skip = (page - 1) * limit
   const branchFilter = user.role === 'SUPER_ADMIN' ? (branchId ? { branchId } : {}) : { branchId: user.branchId }
@@ -450,9 +452,11 @@ export const getStockHistory = async (user, { type, page = 1, limit = 20, branch
     if (startDate) dateFilter.date.gte = new Date(startDate)
     if (endDate) dateFilter.date.lte = new Date(endDate)
   }
-  const where = { ...branchFilter, ...(productId && { productId }), ...dateFilter, invoiceId: { not: null } }
+
+  const baseWhere = { ...branchFilter, ...(productId && { productId }), ...dateFilter }
 
   if (type === 'in') {
+    const where = { ...baseWhere, origin: { not: 'DEALER_SUPPLY' } }
     const [items, total] = await Promise.all([
       prisma.stockIn.findMany({
         where, skip, take: Number(limit),
@@ -469,21 +473,54 @@ export const getStockHistory = async (user, { type, page = 1, limit = 20, branch
     return { items, pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / limit) } }
   }
 
-  const [items, total] = await Promise.all([
+  // type === 'out'
+  const where = { ...baseWhere, invoiceId: { not: null } }
+  const [rawItems, total] = await Promise.all([
     prisma.stockOut.findMany({
       where, skip, take: Number(limit),
       include: {
         product: { select: { id: true, name: true, sku: true, brand: true } },
         branch: { select: { id: true, name: true } },
-        invoice: { select: { id: true, invoiceNumber: true } },
-        serialNumbers: { select: { id: true, serialNumber: true } },
+        invoice: {
+          select: {
+            id: true,
+            invoiceNumber: true,
+            dealer: { select: { id: true, name: true, phone: true } },
+            // ✅ FIX — dealer sale ke serials yahan se aate hain, stockOutId se link nahi hote
+            dealerSerials: { select: { id: true, serialNumber: true, productId: true } },
+          },
+        },
+        serialNumbers: { select: { id: true, serialNumber: true, status: true } },
       },
       orderBy: { date: 'desc' },
     }),
     prisma.stockOut.count({ where }),
   ])
+
+  const items = rawItems.map(so => {
+    // Default: normal sale ke serials (stockOutId se link)
+    let serials = so.serialNumbers || []
+
+    // ✅ FIX — dealer sale hai aur normal path se serials nahi mile,
+    // to invoice.dealerSerials se isi product ke serials match karo
+    if (so.invoice?.dealer && so.invoice.dealerSerials?.length && serials.length === 0) {
+      serials = so.invoice.dealerSerials
+        .filter(s => s.productId === so.productId)
+        .map(s => ({ id: s.id, serialNumber: s.serialNumber, status: 'SOLD' }))
+    }
+
+    return {
+      ...so,
+      displayProductName: so.product?.name || so.productName || '-',
+      dealer: so.invoice?.dealer || null,
+      dealerName: so.invoice?.dealer?.name || null,
+      serialNumbers: serials,
+    }
+  })
+
   return { items, pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / limit) } }
 }
+
 
 // ─── GET CURRENT STOCK ────────────────────────────────────────────────────────
 
