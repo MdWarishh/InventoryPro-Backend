@@ -15,19 +15,23 @@ export const getMonthlyRevenue = async (user, { months = 6, branchId } = {}) => 
       ...where,
       date: { gte: new Date(new Date().setMonth(new Date().getMonth() - months + 1, 1)) },
     },
-    select: { date: true, quantity: true, sellingPrice: true },
+    select: { invoiceId: true },
   })
 
-  // Group by YYYY-MM
+  const invoiceIds = [...new Set(records.map(r => r.invoiceId))]
+  const invoices = invoiceIds.length
+    ? await prisma.invoice.findMany({ where: { id: { in: invoiceIds } }, select: { totalAmount: true, date: true } })
+    : []
+
+  // Group by YYYY-MM using invoice.date
   const map = new Map()
-  for (const r of records) {
-    const d = new Date(r.date)
+  for (const inv of invoices) {
+    const d = new Date(inv.date)
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    const prev = map.get(key) || { revenue: 0, transactions: 0 }
-    map.set(key, {
-      revenue: prev.revenue + r.sellingPrice * r.quantity,
-      transactions: prev.transactions + 1,
-    })
+    const prev = map.get(key) || { revenue: 0, count: 0 }
+    prev.revenue += inv.totalAmount
+    prev.count += 1
+    map.set(key, prev)
   }
 
   // Fill all months (including empty ones)
@@ -38,8 +42,8 @@ export const getMonthlyRevenue = async (user, { months = 6, branchId } = {}) => 
     d.setMonth(d.getMonth() - i)
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     const label = d.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
-    const val = map.get(key) || { revenue: 0, transactions: 0 }
-    result.push({ key, label, revenue: val.revenue, transactions: val.transactions })
+    const val = map.get(key) || { revenue: 0, count: 0 }
+    result.push({ key, label, revenue: val.revenue, transactions: val.count })
   }
 
   return result
@@ -54,26 +58,29 @@ export const getYearlyRevenue = async (user, { years = 3, branchId } = {}) => {
       ...where,
       date: { gte: new Date(new Date().getFullYear() - years + 1, 0, 1) },
     },
-    select: { date: true, quantity: true, sellingPrice: true },
+    select: { invoiceId: true },
   })
 
+  const invoiceIds = [...new Set(records.map(r => r.invoiceId))]
+  const invoices = invoiceIds.length
+    ? await prisma.invoice.findMany({ where: { id: { in: invoiceIds } }, select: { totalAmount: true, date: true } })
+    : []
+
   const map = new Map()
-  for (const r of records) {
-    const year = new Date(r.date).getFullYear()
+  for (const inv of invoices) {
+    const d = new Date(inv.date)
     // Financial year: Apr–Mar  e.g. "25-26"
-    const d = new Date(r.date)
     const fy = d.getMonth() >= 3
       ? `${String(d.getFullYear()).slice(2)}-${String(d.getFullYear() + 1).slice(2)}`
       : `${String(d.getFullYear() - 1).slice(2)}-${String(d.getFullYear()).slice(2)}`
-    const prev = map.get(fy) || { revenue: 0, transactions: 0 }
-    map.set(fy, {
-      revenue: prev.revenue + r.sellingPrice * r.quantity,
-      transactions: prev.transactions + 1,
-    })
+    const prev = map.get(fy) || { revenue: 0, count: 0 }
+    prev.revenue += inv.totalAmount
+    prev.count += 1
+    map.set(fy, prev)
   }
 
   return Array.from(map.entries())
-    .map(([fy, val]) => ({ label: fy, revenue: val.revenue, transactions: val.transactions }))
+    .map(([fy, val]) => ({ label: fy, revenue: val.revenue, transactions: val.count }))
     .sort((a, b) => a.label.localeCompare(b.label))
 }
 
@@ -144,11 +151,16 @@ export const getSummary = async (user, { branchId, startDate, endDate } = {}) =>
 
   const records = await prisma.stockOut.findMany({
     where,
-    select: { quantity: true, sellingPrice: true },
+    select: { quantity: true, invoiceId: true },
   })
 
-  const totalRevenue = records.reduce((s, r) => s + r.sellingPrice * r.quantity, 0)
-  const totalTransactions = records.length
+  const invoiceIds = [...new Set(records.map(r => r.invoiceId))]
+  const invoices = invoiceIds.length
+    ? await prisma.invoice.findMany({ where: { id: { in: invoiceIds } }, select: { totalAmount: true } })
+    : []
+
+  const totalRevenue = invoices.reduce((sum, inv) => sum + inv.totalAmount, 0)
+  const totalTransactions = invoiceIds.length
   const totalUnits = records.reduce((s, r) => s + r.quantity, 0)
   const avgOrderValue = totalTransactions > 0 ? totalRevenue / totalTransactions : 0
 

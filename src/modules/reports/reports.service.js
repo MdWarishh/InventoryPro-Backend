@@ -47,8 +47,8 @@ export const getDashboardStats = async (user, branchId) => {
       where: filter,
       include: { product: { select: { minStockAlert: true } } },
     }).then(stocks => stocks.filter(s => s.currentStock <= s.product.minStockAlert).length),
-    prisma.stockOut.findMany({ where: { ...invoiceFilter, date: { gte: startOfToday } }, select: { sellingPrice: true, quantity: true } }), // ✅ FIX
-    prisma.stockOut.findMany({ where: { ...invoiceFilter, date: { gte: startOfMonth } }, select: { sellingPrice: true, quantity: true } }), // ✅ FIX
+ prisma.stockOut.findMany({ where: { ...invoiceFilter, date: { gte: startOfToday } }, select: { sellingPrice: true, quantity: true, invoiceId: true } }),
+prisma.stockOut.findMany({ where: { ...invoiceFilter, date: { gte: startOfMonth } }, select: { sellingPrice: true, quantity: true, invoiceId: true } }),
     prisma.product.count({ where: { isActive: true } }),
     prisma.stockIn.findMany({
       where: filter,
@@ -65,7 +65,7 @@ export const getDashboardStats = async (user, branchId) => {
         branch: { select: { name: true } },
       },
     }),
-    prisma.stockOut.findMany({ where: invoiceFilter, select: { sellingPrice: true, quantity: true } }), // ✅ FIX
+   prisma.stockOut.findMany({ where: invoiceFilter, select: { sellingPrice: true, quantity: true, invoiceId: true } }), 
     prisma.expense.aggregate({
       where: filter.branchId ? { branchId: filter.branchId } : {},
       _sum: { amount: true },
@@ -85,9 +85,19 @@ export const getDashboardStats = async (user, branchId) => {
     }),
   ])
 
-  const todaySalesAmount = todaySales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
-  const monthSalesAmount = monthSales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
-  const totalRevenue = allStockOuts.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
+  const todayInvoiceIds = [...new Set(todaySales.map(s => s.invoiceId))]
+const monthInvoiceIds = [...new Set(monthSales.map(s => s.invoiceId))]
+const allInvoiceIds   = [...new Set(allStockOuts.map(s => s.invoiceId))]
+
+const [todayInvoices, monthInvoices, allInvoices] = await Promise.all([
+  todayInvoiceIds.length ? prisma.invoice.findMany({ where: { id: { in: todayInvoiceIds } }, select: { totalAmount: true } }) : [],
+  monthInvoiceIds.length ? prisma.invoice.findMany({ where: { id: { in: monthInvoiceIds } }, select: { totalAmount: true } }) : [],
+  allInvoiceIds.length ? prisma.invoice.findMany({ where: { id: { in: allInvoiceIds } }, select: { totalAmount: true } }) : [],
+])
+
+const todaySalesAmount = todayInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0)
+const monthSalesAmount = monthInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0)
+const totalRevenue = allInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0)
 
   const totalExpense = totalExpenseAgg._sum.amount || 0
   const monthExpense  = monthExpenseAgg._sum.amount || 0
@@ -105,12 +115,15 @@ export const getDashboardStats = async (user, branchId) => {
     return sum + mrp * ps.currentStock
   }, 0)
 
+  const todaySalesInvoiceIds = new Set(todaySales.map(s => s.invoiceId))
+const monthSalesInvoiceIds = new Set(monthSales.map(s => s.invoiceId))
+
   return {
     totalStock: totalStockValue._sum.currentStock || 0,
     lowStockCount,
-    todaySales: { amount: todaySalesAmount, count: todaySales.length },
-    monthSales: { amount: monthSalesAmount, count: monthSales.length },
-    totalProducts,
+ todaySales: { amount: todaySalesAmount, count: todaySalesInvoiceIds.size },
+monthSales: { amount: monthSalesAmount, count: monthSalesInvoiceIds.size },
+  totalProducts,
     recentStockIns,
     recentStockOuts,
     totalRevenue,
@@ -124,40 +137,56 @@ export const getDashboardStats = async (user, branchId) => {
 
 export const getSalesReport = async (user, { branchId, startDate, endDate, groupBy = 'day' } = {}) => {
   const filter = getBranchFilter(user, branchId)
-   filter.invoiceId = { not: null }  
+  filter.invoiceId = { not: null }
   const dateFilter = {}
   if (startDate) dateFilter.gte = new Date(startDate)
   if (endDate) dateFilter.lte = new Date(endDate)
   if (Object.keys(dateFilter).length) filter.date = dateFilter
 
+  // Line-items — table/product breakdown ke liye, quantity ke liye bhi
   const sales = await prisma.stockOut.findMany({
     where: filter,
     include: {
       product: { select: { id: true, name: true, sku: true, category: { select: { name: true } } } },
       branch: { select: { id: true, name: true } },
-      invoice: { select: { invoiceNumber: true } },
+      invoice: { select: { invoiceNumber: true, totalAmount: true, date: true } },
     },
     orderBy: { date: 'desc' },
   })
 
-  const totalRevenue = sales.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
+  // ✅ FIX — summary/chart ab distinct invoices se aata hai, stockOut rows se nahi
+  const invoiceIds = [...new Set(sales.map(s => s.invoiceId))]
+  const invoices = invoiceIds.length
+    ? await prisma.invoice.findMany({
+        where: { id: { in: invoiceIds } },
+        select: { id: true, totalAmount: true, date: true },
+      })
+    : []
+
+  const totalRevenue = invoices.reduce((sum, inv) => sum + inv.totalAmount, 0)
+  const totalTransactions = invoices.length   // 👈 80, not 86
   const totalQuantity = sales.reduce((sum, s) => sum + s.quantity, 0)
 
   const grouped = {}
+  for (const inv of invoices) {
+    const key = groupBy === 'month'
+      ? `${inv.date.getFullYear()}-${String(inv.date.getMonth() + 1).padStart(2, '0')}`
+      : inv.date.toISOString().split('T')[0]
+    if (!grouped[key]) grouped[key] = { date: key, revenue: 0, quantity: 0, count: 0 }
+    grouped[key].revenue += inv.totalAmount
+    grouped[key].count++
+  }
   for (const sale of sales) {
     const key = groupBy === 'month'
       ? `${sale.date.getFullYear()}-${String(sale.date.getMonth() + 1).padStart(2, '0')}`
       : sale.date.toISOString().split('T')[0]
-    if (!grouped[key]) grouped[key] = { date: key, revenue: 0, quantity: 0, count: 0 }
-    grouped[key].revenue += sale.sellingPrice * sale.quantity
-    grouped[key].quantity += sale.quantity
-    grouped[key].count++
+    if (grouped[key]) grouped[key].quantity += sale.quantity
   }
 
   return {
-    summary: { totalRevenue, totalQuantity, totalTransactions: sales.length },
+    summary: { totalRevenue, totalQuantity, totalTransactions },
     chart: Object.values(grouped).sort((a, b) => a.date.localeCompare(b.date)),
-    items: sales,
+    items: sales,   // line-item table ke liye as-is theek hai
   }
 }
 
@@ -267,7 +296,7 @@ export const getAllBranchesReport = async (user, { startDate, endDate } = {}) =>
     branches.map(async (branch) => {
       // ✅ FIX — aggregate hataya, findMany + reduce (quantity × price sahi calculate karne ke liye)
       const [salesRows, purchaseRows, historicalIn, stockData] = await Promise.all([
-        prisma.stockOut.findMany({ where: { branchId: branch.id, invoiceId: { not: null }, ...dateFilter }, select: { sellingPrice: true, quantity: true } }),
+       prisma.stockOut.findMany({ where: { branchId: branch.id, invoiceId: { not: null }, ...dateFilter }, select: { sellingPrice: true, quantity: true, invoiceId: true } }),
         prisma.stockIn.findMany({ where: { branchId: branch.id, origin: 'PURCHASE', ...dateFilter }, select: { purchasePrice: true, quantity: true } }), // ✅ origin filter
         prisma.dealerHistoricalStock.findMany({
           where: { type: 'IN', dealer: { branchId: branch.id }, ...dateFilter },
@@ -276,7 +305,12 @@ export const getAllBranchesReport = async (user, { startDate, endDate } = {}) =>
         prisma.productStock.aggregate({ where: { branchId: branch.id }, _sum: { currentStock: true } }),
       ])
 
-      const revenue = salesRows.reduce((sum, s) => sum + s.sellingPrice * s.quantity, 0)
+    const salesInvoiceIds = [...new Set(salesRows.map(s => s.invoiceId))]
+const salesInvoices = salesInvoiceIds.length
+  ? await prisma.invoice.findMany({ where: { id: { in: salesInvoiceIds } }, select: { totalAmount: true } })
+  : []
+const revenue = salesInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0)
+const totalSalesCount = salesInvoiceIds.length
       const purchase =
         purchaseRows.reduce((sum, p) => sum + p.purchasePrice * p.quantity, 0) +
         historicalIn.reduce((sum, h) => sum + (h.purchasePrice || 0) * (h.serialNumbers?.length || h.quantity), 0)
@@ -286,7 +320,7 @@ export const getAllBranchesReport = async (user, { startDate, endDate } = {}) =>
         branchName: branch.name,
         isMainBranch: branch.isMainBranch,
         totalSales: revenue,
-        totalSalesCount: salesRows.length,
+      totalSalesCount,
         totalPurchase: purchase,
         totalPurchaseCount: purchaseRows.length + historicalIn.length,
         currentStock: stockData._sum.currentStock || 0,
